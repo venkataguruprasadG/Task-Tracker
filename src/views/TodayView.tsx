@@ -33,6 +33,10 @@ import {
   isLeetCodeTask,
 } from '../utils/storage';
 import { FocusTimerCard } from '../components/FocusTimerCard';
+import {
+  DailyProgressTaskItem,
+  DailyProgressWidget,
+} from '../components/DailyProgressWidget';
 
 interface TodayViewProps {
   tasks: StudyTask[];
@@ -192,6 +196,37 @@ export const TodayView: React.FC<TodayViewProps> = ({
     () => dailyTasks.filter((t) => t.completedDates.includes(todayKey)).length,
     [dailyTasks, todayKey]
   );
+
+  const dailyProgressItems = useMemo<DailyProgressTaskItem[]>(() => {
+    const activeOneTimeForToday = oneTimeTasks.filter(
+      (t) => t.completedDates.length === 0 || t.completedDates.includes(todayKey)
+    );
+    const todaysTasks = [...dailyTasks, ...activeOneTimeForToday];
+
+    return todaysTasks.map((task) => {
+      const savedSecs = secondsByTaskAndForDate.get(`${task.id}__${todayKey}`) || 0;
+      const liveSecs =
+        timer && !timer.revisionProblemId && timer.taskId === task.id && timer.forDate === todayKey
+          ? elapsedSeconds
+          : 0;
+      const isRunningThis =
+        timer !== null &&
+        !timer.revisionProblemId &&
+        timer.taskId === task.id &&
+        timer.forDate === todayKey &&
+        timer.isRunning;
+
+      return {
+        id: task.id,
+        title: task.title,
+        category: task.category,
+        targetMinutes: task.targetMinutes,
+        doneSeconds: savedSecs + liveSecs,
+        isCompleted: task.completedDates.includes(todayKey),
+        isActive: isRunningThis,
+      };
+    });
+  }, [dailyTasks, oneTimeTasks, todayKey, secondsByTaskAndForDate, timer, elapsedSeconds]);
 
   const selectedLoggedSeconds = activeRevisionProblem
     ? 0
@@ -415,6 +450,15 @@ export const TodayView: React.FC<TodayViewProps> = ({
           </p>
         </div>
       </div>
+
+      {/* Daily Progress Widget */}
+      <DailyProgressWidget
+        items={dailyProgressItems}
+        onSelectTask={(taskId) => {
+          onClearRevisionFocus();
+          onSelectTask(taskId, todayKey);
+        }}
+      />
 
       {/* Primary Focal Anchor: Study Timer */}
       <FocusTimerCard
