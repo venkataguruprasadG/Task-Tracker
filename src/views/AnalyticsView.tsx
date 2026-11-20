@@ -19,6 +19,7 @@ import {
   formatShortDay,
   getOffsetDateKey,
 } from '../utils/storage';
+import { ActivityHeatmap } from '../components/ActivityHeatmap';
 
 interface AnalyticsViewProps {
   tasks: StudyTask[];
@@ -74,31 +75,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       };
     });
   }, [filteredSessions, range, dailyTargetMinutes]);
-
-  // 28-day consistency grid
-  const consistencyGrid = useMemo(() => {
-    const minutesByDate = new Map<string, number>();
-    for (const s of filteredSessions) {
-      minutesByDate.set(s.date, (minutesByDate.get(s.date) || 0) + s.durationSeconds / 60);
-    }
-
-    return Array.from({ length: 28 }).map((_, idx) => {
-      const offset = -(27 - idx);
-      const dateKey = getOffsetDateKey(offset);
-      const minutes = Math.round(minutesByDate.get(dateKey) || 0);
-      let level: 0 | 1 | 2 | 3 = 0;
-      if (minutes > 0 && minutes < dailyTargetMinutes) level = 1;
-      else if (minutes >= dailyTargetMinutes && minutes < dailyTargetMinutes * 1.4) level = 2;
-      else if (minutes >= dailyTargetMinutes * 1.4) level = 3;
-
-      return {
-        dateKey,
-        label: formatMonthDay(dateKey),
-        minutes,
-        level,
-      };
-    });
-  }, [filteredSessions, dailyTargetMinutes]);
 
   // KPI metrics for selected range
   const stats = useMemo(() => {
@@ -347,55 +323,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         )}
       </section>
 
-      {/* Bottom 2-Column Row: 28-Day Consistency & Time by Task */}
+      {/* Bottom 2-Column Row: 30-Day Activity Heatmap & Time by Task */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 28-Day Consistency */}
-        <section className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                28-Day Consistency
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Every square represents one day of learning
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-7 gap-2">
-            {consistencyGrid.map((cell) => {
-              const colorClass =
-                cell.level === 0
-                  ? 'bg-slate-100 dark:bg-slate-800/80 text-slate-400 dark:text-slate-500'
-                  : cell.level === 1
-                  ? 'bg-teal-200 dark:bg-teal-900/70 text-teal-900 dark:text-teal-200'
-                  : cell.level === 2
-                  ? 'bg-teal-600 dark:bg-teal-600 text-white'
-                  : 'bg-teal-800 dark:bg-teal-400 text-white dark:text-slate-950';
-
-              return (
-                <div
-                  key={cell.dateKey}
-                  title={`${cell.label}: ${formatMinutesCompact(cell.minutes)}`}
-                  className={`aspect-square rounded-lg flex flex-col items-center justify-center text-[10px] font-mono tabular-nums transition-transform hover:scale-105 ${colorClass}`}
-                >
-                  <span>{cell.dateKey.slice(-2)}</span>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-1">
-            <span>Less</span>
-            <div className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-xs bg-slate-100 dark:bg-slate-800" />
-              <span className="w-3 h-3 rounded-xs bg-teal-200 dark:bg-teal-900/70" />
-              <span className="w-3 h-3 rounded-xs bg-teal-600" />
-              <span className="w-3 h-3 rounded-xs bg-teal-800 dark:bg-teal-400" />
-            </div>
-            <span>Extended</span>
-          </div>
-        </section>
+        <ActivityHeatmap
+          sessions={filteredSessions}
+          dailyTargetMinutes={dailyTargetMinutes}
+        />
 
         {/* Breakdown by Task */}
         <section className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4">
