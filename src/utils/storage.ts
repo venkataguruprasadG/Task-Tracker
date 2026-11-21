@@ -30,6 +30,10 @@ export const HABIT_COLOR_PALETTE: { name: string; hex: string }[] = [
   { name: 'Pink', hex: '#DB2777' },
 ];
 
+export function isRecurringTask(task: Pick<StudyTask, 'repeat'>): boolean {
+  return task.repeat === 'daily' || task.repeat === 'custom';
+}
+
 export function getTaskColor(task: StudyTask, fallbackIndex: number = 0): string {
   if (task.repeat === 'once') return ONE_TIME_DEFAULT_COLOR;
   if (task.color && /^#[0-9a-fA-F]{6}$/.test(task.color)) {
@@ -44,7 +48,7 @@ export function pickNextUniqueHabitColor(
 ): string {
   const used = new Set(
     existingTasks
-      .filter((t) => t.repeat === 'daily' && t.id !== excludeTaskId && t.color)
+      .filter((t) => isRecurringTask(t) && t.id !== excludeTaskId && t.color)
       .map((t) => t.color!.toLowerCase())
   );
   const free = HABIT_COLOR_PALETTE.find((c) => !used.has(c.hex.toLowerCase()));
@@ -189,12 +193,78 @@ export function getNextRevisionInterval(currentIntervalDays: number, solvedSolo:
   }
 }
 
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+export function getWeekdayOfDateKey(dateKey: string): number {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return new Date(y, m - 1, d).getDay();
+}
+
+export function isTaskScheduledOnDate(
+  task: StudyTask,
+  dateKey: string = getDateKey(),
+  options?: { ignorePaused?: boolean }
+): boolean {
+  if (task.archived) return false;
+  if (!options?.ignorePaused && task.paused) return false;
+  if (task.repeat === 'once') return true;
+
+  const startKey = task.startDate || task.createdAt.slice(0, 10) || dateKey;
+  if (dateKey < startKey) return false;
+
+  if (task.repeat === 'daily') return true;
+
+  // Custom repetition schedule
+  if (task.customRepeatMode === 'weekdays') {
+    const days = task.daysOfWeek && task.daysOfWeek.length > 0 ? task.daysOfWeek : [1, 3, 5];
+    return days.includes(getWeekdayOfDateKey(dateKey));
+  }
+
+  // Default custom mode: every N days (e.g. 2 = alternate days)
+  const interval = Math.max(2, Number(task.intervalDays) || 2);
+  const diff = getDaysDifference(startKey, dateKey);
+  return diff >= 0 && diff % interval === 0;
+}
+
+export function getNextScheduledDate(
+  task: StudyTask,
+  todayKey: string = getDateKey()
+): string | null {
+  if (!isRecurringTask(task)) return null;
+  for (let offset = 1; offset <= 31; offset += 1) {
+    const candidate = addDaysToDateKey(todayKey, offset);
+    if (isTaskScheduledOnDate(task, candidate, { ignorePaused: true })) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function formatScheduleLabel(task: StudyTask): string {
+  if (task.repeat === 'once') return 'One-time';
+  if (task.repeat === 'daily') return 'Every day';
+
+  if (task.customRepeatMode === 'weekdays') {
+    const days = [...(task.daysOfWeek || [])].sort((a, b) => a - b);
+    if (days.length === 0 || days.length === 7) return 'Every day';
+    return days.map((d) => WEEKDAY_SHORT[d]).join(', ');
+  }
+
+  const interval = Math.max(2, Number(task.intervalDays) || 2);
+  return interval === 2 ? 'Alternate days' : `Every ${interval} days`;
+}
+
 export function getMissedDatesForTask(
   task: StudyTask,
   todayKey: string = getDateKey(),
   maxLookbackDays: number = 14
 ): string[] {
-  if (task.repeat !== 'daily' || task.archived || task.carryOverMissed === false) {
+  if (
+    !isRecurringTask(task) ||
+    task.archived ||
+    task.paused ||
+    task.carryOverMissed === false
+  ) {
     return [];
   }
 
@@ -208,6 +278,7 @@ export function getMissedDatesForTask(
   for (let offset = 1; offset <= maxLookbackDays; offset += 1) {
     const checkKey = getOffsetDateKey(-offset);
     if (checkKey < startKey) break;
+    if (!isTaskScheduledOnDate(task, checkKey, { ignorePaused: true })) continue;
     if (!completedSet.has(checkKey) && !skippedSet.has(checkKey)) {
       missed.push(checkKey);
     }
@@ -249,6 +320,34 @@ export function calculateStreak(activeDates: Set<string>): { current: number; be
   }
 
   return { current, best };
+}
+
+export function calculateTaskStreak(task: StudyTask, activeDates: Set<string>): number {
+  if (activeDates.size === 0) return 0;
+  if (task.repeat === 'daily') return calculateStreak(activeDates).current;
+  if (task.repeat !== 'custom') return 0;
+
+  const today = getDateKey();
+  const startKey = task.startDate || task.createdAt.slice(0, 10) || today;
+  let streak = 0;
+
+  // Walk backward through scheduled days only (off-days don't break custom streaks)
+  for (let offset = 0; offset <= 120; offset += 1) {
+    const key = getOffsetDateKey(-offset);
+    if (key < startKey) break;
+    if (!isTaskScheduledOnDate(task, key, { ignorePaused: true })) continue;
+
+    if (activeDates.has(key)) {
+      streak += 1;
+    } else if (offset === 0) {
+      // Today hasn't been completed yet — allow streak from previous scheduled day
+      continue;
+    } else {
+      break;
+    }
+  }
+
+  return streak;
 }
 
 export function getDefaultTasks(): StudyTask[] {
@@ -313,10 +412,11 @@ export function getDefaultTasks(): StudyTask[] {
 function normalizeTask(raw: Partial<StudyTask>, fallbackColorIndex: number = 0): StudyTask {
   const today = getDateKey();
   const created = raw.createdAt || new Date().toISOString();
-  const repeat = raw.repeat === 'once' ? 'once' : 'daily';
+  const repeat: StudyTask['repeat'] =
+    raw.repeat === 'once' ? 'once' : raw.repeat === 'custom' ? 'custom' : 'daily';
 
   let color = ONE_TIME_DEFAULT_COLOR;
-  if (repeat === 'daily') {
+  if (repeat !== 'once') {
     if (raw.color && /^#[0-9a-fA-F]{6}$/.test(raw.color)) {
       color = raw.color;
     } else if (raw.id === 'task-nxtwave-daily') {
@@ -332,11 +432,31 @@ function normalizeTask(raw: Partial<StudyTask>, fallbackColorIndex: number = 0):
     }
   }
 
+  const customRepeatMode =
+    repeat === 'custom'
+      ? raw.customRepeatMode === 'weekdays'
+        ? 'weekdays'
+        : 'interval'
+      : undefined;
+
   return {
     id: raw.id || generateId(),
     title: raw.title || 'Untitled Task',
     category: raw.category || 'General',
     repeat,
+    customRepeatMode,
+    intervalDays:
+      repeat === 'custom' && customRepeatMode === 'interval'
+        ? Math.max(2, Number(raw.intervalDays) || 2)
+        : undefined,
+    daysOfWeek:
+      repeat === 'custom' && customRepeatMode === 'weekdays'
+        ? Array.isArray(raw.daysOfWeek) && raw.daysOfWeek.length > 0
+          ? raw.daysOfWeek
+          : [1, 3, 5]
+        : undefined,
+    paused: Boolean(raw.paused),
+    pausedSince: raw.paused ? raw.pausedSince : undefined,
     color,
     targetMinutes: Math.max(5, Number(raw.targetMinutes) || 45),
     startDate: raw.startDate || created.slice(0, 10) || today,

@@ -17,6 +17,7 @@ import {
   formatShortDay,
   getOffsetDateKey,
   getTaskColor,
+  isRecurringTask,
   ONE_TIME_DEFAULT_COLOR,
 } from '../utils/storage';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
@@ -79,12 +80,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       return task?.targetMinutes || 60;
     }
     const dailyTotal = tasks
-      .filter((t) => t.repeat === 'daily' && !t.archived)
+      .filter((t) => isRecurringTask(t) && !t.archived && !t.paused)
       .reduce((sum, t) => sum + t.targetMinutes, 0);
     return dailyTotal > 0 ? dailyTotal : 60;
   }, [tasks, taskFilter]);
 
-  // Build line series: one unique colored line per daily habit + one shared neutral line for one-time tasks
+  // Build line series: one unique colored line per recurring habit (daily or custom) + one shared neutral line for one-time tasks
   const graphSeries = useMemo<GraphSeries[]>(() => {
     const startKey = getOffsetDateKey(-(activeDays - 1));
     const list: GraphSeries[] = [];
@@ -94,8 +95,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         ? tasks.filter((t) => !t.archived)
         : tasks.filter((t) => t.id === taskFilter);
 
-    const dailyHabits = visibleTasks.filter((t) => t.repeat === 'daily');
-    dailyHabits.forEach((task, idx) => {
+    const recurringHabits = visibleTasks.filter((t) => isRecurringTask(t));
+    recurringHabits.forEach((task, idx) => {
       list.push({
         key: task.id,
         label: task.title,
@@ -104,10 +105,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       });
     });
 
-    const dailyHabitIdSet = new Set(dailyHabits.map((t) => t.id));
+    const recurringHabitIdSet = new Set(recurringHabits.map((t) => t.id));
     const hasOneTimeTask = visibleTasks.some((t) => t.repeat === 'once');
     const hasOneTimeSessionInWindow = filteredSessions.some(
-      (s) => s.date >= startKey && !dailyHabitIdSet.has(s.taskId)
+      (s) => s.date >= startKey && !recurringHabitIdSet.has(s.taskId)
     );
 
     if (hasOneTimeTask || hasOneTimeSessionInWindow) {

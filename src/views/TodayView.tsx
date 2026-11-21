@@ -5,8 +5,10 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  Coffee,
   Edit2,
   Flame,
+  Pause,
   Play,
   Plus,
   Repeat,
@@ -22,16 +24,21 @@ import {
 } from '../types/study';
 import {
   calculateStreak,
+  calculateTaskStreak,
   formatDueFromLabel,
   formatMinutesCompact,
   formatReadableDate,
+  formatScheduleLabel,
   formatSecondsHuman,
   getDateKey,
   getDaysDifference,
   getMissedDatesForTask,
   getNextRevisionInterval,
+  getNextScheduledDate,
   getTaskColor,
   isLeetCodeTask,
+  isRecurringTask,
+  isTaskScheduledOnDate,
 } from '../utils/storage';
 import { FocusTimerCard } from '../components/FocusTimerCard';
 import {
@@ -59,6 +66,7 @@ interface TodayViewProps {
   onResetTimer: () => void;
   onFinishTimer: (note: string, revisionOutcome?: 'solo' | 'assisted') => void;
   onToggleCompleteDate: (taskId: string, dateKey: string) => void;
+  onTogglePauseTask: (taskId: string) => void;
   onSkipMissedDate: (taskId: string, dateKey: string) => void;
   onReviewProblem: (problemId: string, solvedSolo: boolean) => void;
   onOpenNewTask: () => void;
@@ -89,6 +97,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
   onResetTimer,
   onFinishTimer,
   onToggleCompleteDate,
+  onTogglePauseTask,
   onSkipMissedDate,
   onReviewProblem,
   onOpenNewTask,
@@ -178,35 +187,47 @@ export const TodayView: React.FC<TodayViewProps> = ({
           dates.add(s.forDate || s.date);
         }
       }
-      map.set(t.id, calculateStreak(dates).current);
+      map.set(t.id, calculateTaskStreak(t, dates));
     }
     return map;
   }, [tasks, sessions]);
 
-  const dailyTasks = useMemo(
-    () => tasks.filter((t) => t.repeat === 'daily' && !t.archived),
-    [tasks]
+  const scheduledTodayHabits = useMemo(
+    () =>
+      tasks.filter(
+        (t) => !t.archived && isRecurringTask(t) && isTaskScheduledOnDate(t, todayKey)
+      ),
+    [tasks, todayKey]
   );
+
+  const offOrPausedHabits = useMemo(
+    () =>
+      tasks.filter(
+        (t) => !t.archived && isRecurringTask(t) && !isTaskScheduledOnDate(t, todayKey)
+      ),
+    [tasks, todayKey]
+  );
+
   const oneTimeTasks = useMemo(
     () => tasks.filter((t) => t.repeat === 'once' && !t.archived),
     [tasks]
   );
 
   const dailyTargetTotalMinutes = useMemo(
-    () => dailyTasks.reduce((sum, t) => sum + t.targetMinutes, 0),
-    [dailyTasks]
+    () => scheduledTodayHabits.reduce((sum, t) => sum + t.targetMinutes, 0),
+    [scheduledTodayHabits]
   );
 
   const dailyCompletedCount = useMemo(
-    () => dailyTasks.filter((t) => t.completedDates.includes(todayKey)).length,
-    [dailyTasks, todayKey]
+    () => scheduledTodayHabits.filter((t) => t.completedDates.includes(todayKey)).length,
+    [scheduledTodayHabits, todayKey]
   );
 
   const dailyProgressItems = useMemo<DailyProgressTaskItem[]>(() => {
     const activeOneTimeForToday = oneTimeTasks.filter(
       (t) => t.completedDates.length === 0 || t.completedDates.includes(todayKey)
     );
-    const todaysTasks = [...dailyTasks, ...activeOneTimeForToday];
+    const todaysTasks = [...scheduledTodayHabits, ...activeOneTimeForToday];
 
     return todaysTasks.map((task, idx) => {
       const savedSecs = secondsByTaskAndForDate.get(`${task.id}__${todayKey}`) || 0;
@@ -232,7 +253,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
         isActive: isRunningThis,
       };
     });
-  }, [dailyTasks, oneTimeTasks, todayKey, secondsByTaskAndForDate, timer, elapsedSeconds]);
+  }, [scheduledTodayHabits, oneTimeTasks, todayKey, secondsByTaskAndForDate, timer, elapsedSeconds]);
 
   const selectedLoggedSeconds = activeRevisionProblem
     ? 0
@@ -319,8 +340,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
                   ·
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  {task.repeat === 'daily' && <Repeat className="w-3 h-3" />}
-                  <span>{task.repeat === 'daily' ? 'Repeats daily' : 'One-time'}</span>
+                  {isRecurringTask(task) && <Repeat className="w-3 h-3" />}
+                  <span>{formatScheduleLabel(task)}</span>
                 </span>
                 <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
                   ·
@@ -328,13 +349,13 @@ export const TodayView: React.FC<TodayViewProps> = ({
                 <span className="font-mono tabular-nums">
                   Target {formatMinutesCompact(task.targetMinutes)}
                 </span>
-                {task.repeat === 'daily' && streak > 0 && (
+                {isRecurringTask(task) && streak > 0 && (
                   <>
                     <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
                       ·
                     </span>
                     <span className="text-amber-600 dark:text-amber-400 font-medium tabular-nums">
-                      {streak}d streak
+                      {streak} streak
                     </span>
                   </>
                 )}
@@ -402,6 +423,18 @@ export const TodayView: React.FC<TodayViewProps> = ({
           >
             + Log
           </button>
+
+          {isRecurringTask(task) && (
+            <button
+              type="button"
+              onClick={() => onTogglePauseTask(task.id)}
+              className="p-1.5 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+              title="Take a break (pause habit)"
+              aria-label={`Pause ${task.title}`}
+            >
+              <Pause className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           <button
             type="button"
@@ -529,12 +562,12 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
         <div className="p-5 space-y-1">
           <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Today&apos;s Daily Tasks
+            Scheduled Today
           </div>
           <div className="text-2xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
             {dailyCompletedCount}{' '}
             <span className="text-sm font-normal text-slate-400 dark:text-slate-500">
-              / {dailyTasks.length}
+              / {scheduledTodayHabits.length}
             </span>
           </div>
           <div className="text-xs text-slate-500 dark:text-slate-400">
@@ -809,11 +842,11 @@ export const TodayView: React.FC<TodayViewProps> = ({
         </section>
       )}
 
-      {/* Daily Repeating Tasks (Today) */}
+      {/* Scheduled Habits (Today) */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-            Today&apos;s Daily Learning
+            Scheduled Today
           </h2>
           <button
             type="button"
@@ -825,13 +858,13 @@ export const TodayView: React.FC<TodayViewProps> = ({
           </button>
         </div>
 
-        {dailyTasks.length === 0 ? (
+        {scheduledTodayHabits.length === 0 ? (
           <div className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center space-y-2">
             <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-              No daily repeating tasks yet
+              No repeating habits scheduled for today
             </p>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Add daily habits like &ldquo;NxtWave Daily Learning&rdquo; or &ldquo;Daily LeetCode Problem&rdquo;.
+              Add a daily or custom-day habit, or resume a paused habit below.
             </p>
             <button
               type="button"
@@ -839,12 +872,12 @@ export const TodayView: React.FC<TodayViewProps> = ({
               className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-teal-700 hover:bg-teal-600 text-white text-xs font-medium rounded-lg cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Create Daily Task</span>
+              <span>Create Habit</span>
             </button>
           </div>
         ) : (
           <div className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800/80 overflow-hidden">
-            {dailyTasks.map(renderTaskRow)}
+            {scheduledTodayHabits.map(renderTaskRow)}
           </div>
         )}
       </section>
@@ -857,6 +890,105 @@ export const TodayView: React.FC<TodayViewProps> = ({
           </h2>
           <div className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800/80 overflow-hidden">
             {oneTimeTasks.map(renderTaskRow)}
+          </div>
+        </section>
+      )}
+
+      {/* Off Today & On Break Habits */}
+      {offOrPausedHabits.length > 0 && (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Coffee className="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
+              <h2 className="text-base font-semibold text-slate-700 dark:text-slate-300">
+                Off Today &amp; On Break
+              </h2>
+              <span className="text-xs font-mono tabular-nums text-slate-400 dark:text-slate-500">
+                {offOrPausedHabits.length}
+              </span>
+            </div>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Not counted in today&apos;s targets
+            </span>
+          </div>
+
+          <div className="bg-white/75 dark:bg-[#141923]/75 border border-slate-200/80 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800/80 overflow-hidden">
+            {offOrPausedHabits.map((task) => {
+              const taskColor = getTaskColor(task);
+              const nextDate = !task.paused ? getNextScheduledDate(task, todayKey) : null;
+
+              return (
+                <div
+                  key={task.id}
+                  className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0 opacity-75"
+                        style={{ backgroundColor: taskColor }}
+                      />
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                        {task.title}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 flex-wrap pl-4.5">
+                      <span>{formatScheduleLabel(task)}</span>
+                      <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
+                        ·
+                      </span>
+                      {task.paused ? (
+                        <span className="text-amber-700 dark:text-amber-400 font-medium">
+                          On break
+                          {task.pausedSince ? ` since ${formatReadableDate(task.pausedSince)}` : ''}
+                        </span>
+                      ) : (
+                        <span>
+                          Off today{nextDate ? ` · Next ${formatReadableDate(nextDate)}` : ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0 pl-4.5 sm:pl-0">
+                    {task.paused ? (
+                      <button
+                        type="button"
+                        onClick={() => onTogglePauseTask(task.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 hover:bg-teal-100 dark:bg-teal-500/15 dark:hover:bg-teal-500/25 text-teal-800 dark:text-teal-300 border border-teal-200 dark:border-teal-500/30 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Play className="w-3 h-3 fill-current" />
+                        <span>Resume Habit</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClearRevisionFocus();
+                          onSelectTask(task.id, todayKey);
+                          onStartTimer(task.id, todayKey);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Play className="w-3 h-3 fill-current" />
+                        <span>Bonus Session</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => onOpenEditTask(task)}
+                      className="p-1.5 text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                      title="Edit schedule"
+                      aria-label={`Edit ${task.title}`}
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}

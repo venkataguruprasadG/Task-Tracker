@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, X } from 'lucide-react';
 import {
   ActiveTimerState,
+  CustomRepeatMode,
   LeetCodeDifficulty,
   LeetCodeProblem,
   ReminderSettings,
@@ -17,9 +18,12 @@ import {
   formatReadableDate,
   generateId,
   getDateKey,
+  getDaysDifference,
   getElapsedTimerSeconds,
   getNextRevisionInterval,
   isLeetCodeTask,
+  isRecurringTask,
+  isTaskScheduledOnDate,
   loadActiveTimer,
   loadLeetCodeProblems,
   loadReminderSettings,
@@ -264,7 +268,10 @@ export default function App() {
       if (nowHHMM < reminderSettings.dailyReminderTime) return;
 
       const pendingDaily = tasks.filter(
-        (t) => t.repeat === 'daily' && !t.archived && !t.completedDates.includes(todayKey)
+        (t) =>
+          isRecurringTask(t) &&
+          isTaskScheduledOnDate(t, todayKey) &&
+          !t.completedDates.includes(todayKey)
       ).length;
       const pendingRevisions = leetcodeProblems.filter(
         (p) => p.nextReviewDate <= todayKey
@@ -546,19 +553,50 @@ export default function App() {
     }
   };
 
+  const collectSkippedBreakDays = (
+    existingSkipped: string[],
+    pausedSince: string | undefined,
+    todayKey: string
+  ): string[] => {
+    if (!pausedSince || pausedSince >= todayKey) return existingSkipped;
+    const set = new Set(existingSkipped);
+    const totalDays = Math.min(90, getDaysDifference(pausedSince, todayKey));
+    for (let i = 0; i < totalDays; i += 1) {
+      set.add(addDaysToDateKey(pausedSince, i));
+    }
+    return Array.from(set);
+  };
+
   // Task CRUD
   const handleSaveTask = (data: {
     title: string;
     category: string;
     repeat: RepeatType;
+    customRepeatMode?: CustomRepeatMode;
+    intervalDays?: number;
+    daysOfWeek?: number[];
+    paused: boolean;
     color: string;
     targetMinutes: number;
     carryOverMissed: boolean;
     startDate: string;
   }) => {
-    const resolvedColor = data.repeat === 'daily' ? data.color : ONE_TIME_DEFAULT_COLOR;
+    const todayKey = getDateKey();
+    const isHabit = data.repeat === 'daily' || data.repeat === 'custom';
+    const resolvedColor = isHabit ? data.color : ONE_TIME_DEFAULT_COLOR;
 
     if (editingTask) {
+      const wasPaused = Boolean(editingTask.paused);
+      const nextPaused = isHabit ? data.paused : false;
+      const nextSkipped =
+        wasPaused && !nextPaused
+          ? collectSkippedBreakDays(editingTask.skippedDates || [], editingTask.pausedSince, todayKey)
+          : editingTask.skippedDates || [];
+
+      if (!wasPaused && nextPaused && timer?.taskId === editingTask.id && !timer.revisionProblemId) {
+        setTimer(null);
+      }
+
       setTasks((prev) =>
         prev.map((t) =>
           t.id === editingTask.id
@@ -567,6 +605,12 @@ export default function App() {
                 title: data.title,
                 category: data.category,
                 repeat: data.repeat,
+                customRepeatMode: data.repeat === 'custom' ? data.customRepeatMode : undefined,
+                intervalDays: data.repeat === 'custom' ? data.intervalDays : undefined,
+                daysOfWeek: data.repeat === 'custom' ? data.daysOfWeek : undefined,
+                paused: nextPaused,
+                pausedSince: nextPaused ? editingTask.pausedSince || todayKey : undefined,
+                skippedDates: nextSkipped,
                 color: resolvedColor,
                 targetMinutes: data.targetMinutes,
                 carryOverMissed: data.carryOverMissed,
@@ -582,9 +626,13 @@ export default function App() {
         title: data.title,
         category: data.category,
         repeat: data.repeat,
+        customRepeatMode: data.repeat === 'custom' ? data.customRepeatMode : undefined,
+        intervalDays: data.repeat === 'custom' ? data.intervalDays : undefined,
+        daysOfWeek: data.repeat === 'custom' ? data.daysOfWeek : undefined,
+        paused: false,
         color: resolvedColor,
         targetMinutes: data.targetMinutes,
-        startDate: data.startDate || getDateKey(),
+        startDate: data.startDate || todayKey,
         carryOverMissed: data.carryOverMissed,
         completedDates: [],
         skippedDates: [],
@@ -594,9 +642,46 @@ export default function App() {
       if (!timer?.isRunning) {
         setSelectedRevisionProblemId(null);
         setSelectedTaskId(newTask.id);
-        setSelectedForDate(getDateKey());
+        setSelectedForDate(todayKey);
       }
     }
+  };
+
+  const handleTogglePauseTask = (taskId: string) => {
+    const todayKey = getDateKey();
+    const target = tasks.find((t) => t.id === taskId);
+    if (!target || !isRecurringTask(target)) return;
+
+    const nextPaused = !target.paused;
+    if (nextPaused && timer?.taskId === taskId && !timer.revisionProblemId) {
+      setTimer(null);
+    }
+
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== taskId) return t;
+        if (nextPaused) {
+          return {
+            ...t,
+            paused: true,
+            pausedSince: todayKey,
+          };
+        }
+        return {
+          ...t,
+          paused: false,
+          pausedSince: undefined,
+          skippedDates: collectSkippedBreakDays(t.skippedDates || [], t.pausedSince, todayKey),
+        };
+      })
+    );
+
+    showToast(
+      nextPaused ? `Paused · ${target.title}` : `Resumed · ${target.title}`,
+      nextPaused
+        ? 'Taking a break — no missed days will build up while paused.'
+        : 'Back on schedule from today.'
+    );
   };
 
   // Clicking checkbox on a task (intercepts LeetCode tasks when checking complete to ask for problem #)
@@ -867,6 +952,7 @@ export default function App() {
             onResetTimer={handleResetTimer}
             onFinishTimer={handleFinishTimer}
             onToggleCompleteDate={handleToggleCompleteDate}
+            onTogglePauseTask={handleTogglePauseTask}
             onSkipMissedDate={handleSkipMissedDate}
             onReviewProblem={handleReviewProblem}
             onOpenNewTask={() => {

@@ -1,4 +1,6 @@
-export type RepeatType = 'daily' | 'once';
+export type RepeatType = 'daily' | 'custom' | 'once';
+
+export type CustomRepeatMode = 'interval' | 'weekdays';
 
 export type TimerMode = 'stopwatch' | 'target';
 
@@ -11,10 +13,15 @@ export interface StudyTask {
   title: string;
   category: string;
   repeat: RepeatType;
-  color?: string; // Unique hex color for daily habits; one-time tasks use default neutral color
+  customRepeatMode?: CustomRepeatMode; // 'interval' (e.g. alternate/every N days) or 'weekdays'
+  intervalDays?: number; // Default 2 (alternate days) when customRepeatMode === 'interval'
+  daysOfWeek?: number[]; // 0=Sun..6=Sat when customRepeatMode === 'weekdays'
+  paused?: boolean; // True when taking a break from this habit
+  pausedSince?: string; // YYYY-MM-DD when break started
+  color?: string; // Unique hex color for repeating habits; one-time tasks use default neutral color
   targetMinutes: number; // e.g., 30, 45, 60 (flexible — sessions can extend beyond this)
-  startDate: string; // YYYY-MM-DD when daily tracking begins
-  carryOverMissed: boolean; // If true, missed previous days appear as "Due from Yesterday"
+  startDate: string; // YYYY-MM-DD when habit tracking begins
+  carryOverMissed: boolean; // If true, missed scheduled days appear as "Due from Yesterday"
   completedDates: string[]; // YYYY-MM-DD dates when marked complete
   skippedDates: string[]; // YYYY-MM-DD dates explicitly skipped/dismissed
   createdAt: string;
