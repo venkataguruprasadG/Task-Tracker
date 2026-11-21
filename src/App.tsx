@@ -26,6 +26,7 @@ import {
   loadSessions,
   loadTasks,
   loadTheme,
+  ONE_TIME_DEFAULT_COLOR,
   saveActiveTimer,
   saveLeetCodeProblems,
   saveReminderSettings,
@@ -550,10 +551,13 @@ export default function App() {
     title: string;
     category: string;
     repeat: RepeatType;
+    color: string;
     targetMinutes: number;
     carryOverMissed: boolean;
     startDate: string;
   }) => {
+    const resolvedColor = data.repeat === 'daily' ? data.color : ONE_TIME_DEFAULT_COLOR;
+
     if (editingTask) {
       setTasks((prev) =>
         prev.map((t) =>
@@ -563,6 +567,7 @@ export default function App() {
                 title: data.title,
                 category: data.category,
                 repeat: data.repeat,
+                color: resolvedColor,
                 targetMinutes: data.targetMinutes,
                 carryOverMissed: data.carryOverMissed,
                 startDate: data.startDate,
@@ -577,6 +582,7 @@ export default function App() {
         title: data.title,
         category: data.category,
         repeat: data.repeat,
+        color: resolvedColor,
         targetMinutes: data.targetMinutes,
         startDate: data.startDate || getDateKey(),
         carryOverMissed: data.carryOverMissed,
@@ -975,6 +981,7 @@ export default function App() {
       <TaskModal
         isOpen={taskModalOpen}
         editingTask={editingTask}
+        existingTasks={tasks}
         onClose={() => {
           setTaskModalOpen(false);
           setEditingTask(null);

@@ -15,6 +15,43 @@ const LEETCODE_PROBLEMS_KEY = 'daily_study_leetcode_problems_v1';
 const LEETCODE_MIGRATION_KEY = 'daily_study_migrated_leetcode_v1';
 const CPP_DSA_MIGRATION_KEY = 'daily_study_migrated_cpp_dsa_v1';
 
+export const ONE_TIME_DEFAULT_COLOR = '#64748B';
+
+export const HABIT_COLOR_PALETTE: { name: string; hex: string }[] = [
+  { name: 'Teal', hex: '#0F766E' },
+  { name: 'Blue', hex: '#2563EB' },
+  { name: 'Violet', hex: '#7C3AED' },
+  { name: 'Amber', hex: '#D97706' },
+  { name: 'Rose', hex: '#E11D48' },
+  { name: 'Emerald', hex: '#059669' },
+  { name: 'Orange', hex: '#EA580C' },
+  { name: 'Cyan', hex: '#0891B2' },
+  { name: 'Indigo', hex: '#4F46E5' },
+  { name: 'Pink', hex: '#DB2777' },
+];
+
+export function getTaskColor(task: StudyTask, fallbackIndex: number = 0): string {
+  if (task.repeat === 'once') return ONE_TIME_DEFAULT_COLOR;
+  if (task.color && /^#[0-9a-fA-F]{6}$/.test(task.color)) {
+    return task.color;
+  }
+  return HABIT_COLOR_PALETTE[fallbackIndex % HABIT_COLOR_PALETTE.length].hex;
+}
+
+export function pickNextUniqueHabitColor(
+  existingTasks: StudyTask[],
+  excludeTaskId?: string
+): string {
+  const used = new Set(
+    existingTasks
+      .filter((t) => t.repeat === 'daily' && t.id !== excludeTaskId && t.color)
+      .map((t) => t.color!.toLowerCase())
+  );
+  const free = HABIT_COLOR_PALETTE.find((c) => !used.has(c.hex.toLowerCase()));
+  if (free) return free.hex;
+  return HABIT_COLOR_PALETTE[existingTasks.length % HABIT_COLOR_PALETTE.length].hex;
+}
+
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -223,6 +260,7 @@ export function getDefaultTasks(): StudyTask[] {
       title: 'NxtWave Daily Learning',
       category: 'NxtWave',
       repeat: 'daily',
+      color: '#0F766E',
       targetMinutes: 60,
       startDate: today,
       carryOverMissed: true,
@@ -235,6 +273,7 @@ export function getDefaultTasks(): StudyTask[] {
       title: 'Daily LeetCode Problem',
       category: 'LeetCode',
       repeat: 'daily',
+      color: '#2563EB',
       targetMinutes: 45,
       startDate: today,
       carryOverMissed: true,
@@ -247,6 +286,7 @@ export function getDefaultTasks(): StudyTask[] {
       title: 'C++ Daily Topic',
       category: 'C++',
       repeat: 'daily',
+      color: '#7C3AED',
       targetMinutes: 45,
       startDate: today,
       carryOverMissed: true,
@@ -259,6 +299,7 @@ export function getDefaultTasks(): StudyTask[] {
       title: 'DSA Daily Topic',
       category: 'DSA',
       repeat: 'daily',
+      color: '#D97706',
       targetMinutes: 45,
       startDate: today,
       carryOverMissed: true,
@@ -269,14 +310,34 @@ export function getDefaultTasks(): StudyTask[] {
   ];
 }
 
-function normalizeTask(raw: Partial<StudyTask>): StudyTask {
+function normalizeTask(raw: Partial<StudyTask>, fallbackColorIndex: number = 0): StudyTask {
   const today = getDateKey();
   const created = raw.createdAt || new Date().toISOString();
+  const repeat = raw.repeat === 'once' ? 'once' : 'daily';
+
+  let color = ONE_TIME_DEFAULT_COLOR;
+  if (repeat === 'daily') {
+    if (raw.color && /^#[0-9a-fA-F]{6}$/.test(raw.color)) {
+      color = raw.color;
+    } else if (raw.id === 'task-nxtwave-daily') {
+      color = '#0F766E';
+    } else if (raw.id === 'task-leetcode-daily') {
+      color = '#2563EB';
+    } else if (raw.id === 'task-cpp-daily') {
+      color = '#7C3AED';
+    } else if (raw.id === 'task-dsa-daily') {
+      color = '#D97706';
+    } else {
+      color = HABIT_COLOR_PALETTE[fallbackColorIndex % HABIT_COLOR_PALETTE.length].hex;
+    }
+  }
+
   return {
     id: raw.id || generateId(),
     title: raw.title || 'Untitled Task',
     category: raw.category || 'General',
-    repeat: raw.repeat === 'once' ? 'once' : 'daily',
+    repeat,
+    color,
     targetMinutes: Math.max(5, Number(raw.targetMinutes) || 45),
     startDate: raw.startDate || created.slice(0, 10) || today,
     carryOverMissed: raw.carryOverMissed !== undefined ? raw.carryOverMissed : true,
@@ -300,8 +361,10 @@ export function loadTasks(): StudyTask[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return getDefaultTasks();
 
-    const normalized = parsed.map((item) => normalizeTask(item));
-    let didMutate = false;
+    const normalized = parsed.map((item, idx) => normalizeTask(item, idx));
+    let didMutate = parsed.some(
+      (item: Partial<StudyTask>) => item.repeat !== 'once' && !item.color
+    );
 
     if (!localStorage.getItem(LEETCODE_MIGRATION_KEY)) {
       const hasLeetCode = normalized.some(
@@ -315,6 +378,7 @@ export function loadTasks(): StudyTask[] {
           title: 'Daily LeetCode Problem',
           category: 'LeetCode',
           repeat: 'daily',
+          color: '#2563EB',
           targetMinutes: 45,
           startDate: getDateKey(),
           carryOverMissed: true,
@@ -343,6 +407,7 @@ export function loadTasks(): StudyTask[] {
           title: 'C++ Daily Topic',
           category: 'C++',
           repeat: 'daily',
+          color: '#7C3AED',
           targetMinutes: 45,
           startDate: today,
           carryOverMissed: true,
@@ -365,6 +430,7 @@ export function loadTasks(): StudyTask[] {
           title: 'DSA Daily Topic',
           category: 'DSA',
           repeat: 'daily',
+          color: '#D97706',
           targetMinutes: 45,
           startDate: today,
           carryOverMissed: true,

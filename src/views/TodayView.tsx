@@ -30,6 +30,7 @@ import {
   getDaysDifference,
   getMissedDatesForTask,
   getNextRevisionInterval,
+  getTaskColor,
   isLeetCodeTask,
 } from '../utils/storage';
 import { FocusTimerCard } from '../components/FocusTimerCard';
@@ -207,7 +208,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
     );
     const todaysTasks = [...dailyTasks, ...activeOneTimeForToday];
 
-    return todaysTasks.map((task) => {
+    return todaysTasks.map((task, idx) => {
       const savedSecs = secondsByTaskAndForDate.get(`${task.id}__${todayKey}`) || 0;
       const liveSecs =
         timer && !timer.revisionProblemId && timer.taskId === task.id && timer.forDate === todayKey
@@ -224,6 +225,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
         id: task.id,
         title: task.title,
         category: task.category,
+        color: getTaskColor(task, idx),
         targetMinutes: task.targetMinutes,
         doneSeconds: savedSecs + liveSecs,
         isCompleted: task.completedDates.includes(todayKey),
@@ -256,6 +258,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
     const streak = taskStreakMap.get(task.id) || 0;
     const missedCountForThis = missedCarryoverItems.filter((m) => m.task.id === task.id).length;
     const isLc = isLeetCodeTask(task);
+    const taskColor = getTaskColor(task);
 
     return (
       <div
@@ -289,6 +292,11 @@ export const TodayView: React.FC<TodayViewProps> = ({
           <div className="min-w-0 flex-1 space-y-2">
             <div>
               <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                  style={{ backgroundColor: taskColor }}
+                  title={task.repeat === 'daily' ? 'Habit line color' : 'Default one-time color'}
+                />
                 <span
                   className={`text-sm font-medium ${
                     isDoneToday
@@ -357,8 +365,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
             <div className="flex items-center gap-3 max-w-sm">
               <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-teal-600 dark:bg-teal-500 rounded-full transition-all duration-300"
-                  style={{ width: `${pct}%` }}
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{ width: `${pct}%`, backgroundColor: taskColor }}
                 />
               </div>
               <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 shrink-0">

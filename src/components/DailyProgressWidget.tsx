@@ -5,6 +5,7 @@ export interface DailyProgressTaskItem {
   id: string;
   title: string;
   category: string;
+  color: string;
   targetMinutes: number;
   doneSeconds: number;
   isCompleted: boolean;
@@ -202,14 +203,20 @@ export const DailyProgressWidget: React.FC<DailyProgressWidgetProps> = ({
                     title={`Focus on ${item.title}`}
                   >
                     <div className="flex items-center justify-between gap-2 text-xs">
-                      <span
-                        className={`truncate font-medium transition-colors ${
-                          item.isActive
-                            ? 'text-teal-700 dark:text-teal-400'
-                            : 'text-slate-700 dark:text-slate-300 group-hover:text-slate-950 dark:group-hover:text-white'
-                        }`}
-                      >
-                        {item.category || item.title}
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span
+                          className={`truncate font-medium transition-colors ${
+                            item.isActive
+                              ? 'text-teal-700 dark:text-teal-400'
+                              : 'text-slate-700 dark:text-slate-300 group-hover:text-slate-950 dark:group-hover:text-white'
+                          }`}
+                        >
+                          {item.category || item.title}
+                        </span>
                       </span>
                       <span className="font-mono tabular-nums text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
                         {doneMins}m/{formatMinutesCompact(item.targetMinutes)}
@@ -217,12 +224,8 @@ export const DailyProgressWidget: React.FC<DailyProgressWidgetProps> = ({
                     </div>
                     <div className="w-full h-1 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                       <div
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          taskPct >= 100
-                            ? 'bg-emerald-600 dark:bg-emerald-400'
-                            : 'bg-teal-600/80 dark:bg-teal-500/80'
-                        }`}
-                        style={{ width: `${taskPct}%` }}
+                        className="h-full rounded-full transition-all duration-300"
+                        style={{ width: `${taskPct}%`, backgroundColor: item.color }}
                       />
                     </div>
                   </button>

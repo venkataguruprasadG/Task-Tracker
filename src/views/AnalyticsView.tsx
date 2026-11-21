@@ -1,10 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
-  Cell,
-  ReferenceLine,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -18,6 +16,8 @@ import {
   formatMonthDay,
   formatShortDay,
   getOffsetDateKey,
+  getTaskColor,
+  ONE_TIME_DEFAULT_COLOR,
 } from '../utils/storage';
 import { ActivityHeatmap } from '../components/ActivityHeatmap';
 
@@ -30,6 +30,16 @@ interface AnalyticsViewProps {
 }
 
 type RangePreset = 7 | 14 | 30 | 'custom';
+type LineChartMode = 'worm' | 'daily';
+
+interface GraphSeries {
+  key: string;
+  label: string;
+  color: string;
+  isOneTime: boolean;
+}
+
+const ONE_TIME_SERIES_KEY = '__one_time_tasks__';
 
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   tasks,
@@ -41,6 +51,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const [preset, setPreset] = useState<RangePreset>(7);
   const [customDaysInput, setCustomDaysInput] = useState<string>('21');
   const [taskFilter, setTaskFilter] = useState<string>('all');
+  const [lineMode, setLineMode] = useState<LineChartMode>('worm');
+  const [hiddenSeriesKeys, setHiddenSeriesKeys] = useState<Set<string>>(() => new Set());
 
   const parsedCustomDays = useMemo(() => {
     const n = parseInt(customDaysInput, 10);
@@ -49,6 +61,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   }, [customDaysInput]);
 
   const activeDays = preset === 'custom' ? parsedCustomDays : preset;
+
+  const taskById = useMemo(() => {
+    const map = new Map<string, StudyTask>();
+    for (const t of tasks) map.set(t.id, t);
+    return map;
+  }, [tasks]);
 
   const filteredSessions = useMemo(() => {
     if (taskFilter === 'all') return sessions;
@@ -66,7 +84,96 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     return dailyTotal > 0 ? dailyTotal : 60;
   }, [tasks, taskFilter]);
 
-  // Pre-aggregate minutes per date for fast period queries
+  // Build line series: one unique colored line per daily habit + one shared neutral line for one-time tasks
+  const graphSeries = useMemo<GraphSeries[]>(() => {
+    const startKey = getOffsetDateKey(-(activeDays - 1));
+    const list: GraphSeries[] = [];
+
+    const visibleTasks =
+      taskFilter === 'all'
+        ? tasks.filter((t) => !t.archived)
+        : tasks.filter((t) => t.id === taskFilter);
+
+    const dailyHabits = visibleTasks.filter((t) => t.repeat === 'daily');
+    dailyHabits.forEach((task, idx) => {
+      list.push({
+        key: task.id,
+        label: task.title,
+        color: getTaskColor(task, idx),
+        isOneTime: false,
+      });
+    });
+
+    const dailyHabitIdSet = new Set(dailyHabits.map((t) => t.id));
+    const hasOneTimeTask = visibleTasks.some((t) => t.repeat === 'once');
+    const hasOneTimeSessionInWindow = filteredSessions.some(
+      (s) => s.date >= startKey && !dailyHabitIdSet.has(s.taskId)
+    );
+
+    if (hasOneTimeTask || hasOneTimeSessionInWindow) {
+      list.push({
+        key: ONE_TIME_SERIES_KEY,
+        label:
+          taskFilter !== 'all' && visibleTasks[0]?.repeat === 'once'
+            ? visibleTasks[0].title
+            : 'One-Time Tasks',
+        color: ONE_TIME_DEFAULT_COLOR,
+        isOneTime: true,
+      });
+    }
+
+    return list;
+  }, [tasks, filteredSessions, activeDays, taskFilter]);
+
+  // Build daily and cumulative (cricket-worm) data points across activeDays
+  const lineChartData = useMemo(() => {
+    const dailyHabitIds = new Set(
+      graphSeries.filter((s) => !s.isOneTime).map((s) => s.key)
+    );
+
+    // Map: dateKey -> seriesKey -> minutes
+    const byDateAndSeries = new Map<string, Map<string, number>>();
+    for (const s of filteredSessions) {
+      const seriesKey = dailyHabitIds.has(s.taskId) ? s.taskId : ONE_TIME_SERIES_KEY;
+      let dayMap = byDateAndSeries.get(s.date);
+      if (!dayMap) {
+        dayMap = new Map<string, number>();
+        byDateAndSeries.set(s.date, dayMap);
+      }
+      dayMap.set(seriesKey, (dayMap.get(seriesKey) || 0) + s.durationSeconds / 60);
+    }
+
+    const runningTotals = new Map<string, number>();
+    for (const ser of graphSeries) {
+      runningTotals.set(ser.key, 0);
+    }
+
+    return Array.from({ length: activeDays }).map((_, idx) => {
+      const offset = -(activeDays - 1 - idx);
+      const dateKey = getOffsetDateKey(offset);
+      const dayMap = byDateAndSeries.get(dateKey);
+
+      const point: Record<string, string | number> = {
+        dateKey,
+        label: activeDays <= 7 ? formatShortDay(dateKey) : formatMonthDay(dateKey),
+        fullDate: formatMonthDay(dateKey),
+      };
+
+      for (const ser of graphSeries) {
+        const dayMins = Math.round(dayMap?.get(ser.key) || 0);
+        const nextCum = (runningTotals.get(ser.key) || 0) + dayMins;
+        runningTotals.set(ser.key, nextCum);
+
+        point[`daily_${ser.key}`] = dayMins;
+        point[`worm_${ser.key}`] = nextCum;
+        point[ser.key] = lineMode === 'worm' ? nextCum : dayMins;
+      }
+
+      return point;
+    });
+  }, [filteredSessions, graphSeries, activeDays, lineMode]);
+
+  // Pre-aggregate total minutes per date for summary KPIs and period comparison
   const minutesByDate = useMemo(() => {
     const map = new Map<string, number>();
     for (const s of filteredSessions) {
@@ -74,22 +181,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     }
     return map;
   }, [filteredSessions]);
-
-  // Daily series for current activeDays range
-  const chartData = useMemo(() => {
-    return Array.from({ length: activeDays }).map((_, idx) => {
-      const offset = -(activeDays - 1 - idx);
-      const dateKey = getOffsetDateKey(offset);
-      const minutes = Math.round(minutesByDate.get(dateKey) || 0);
-      return {
-        dateKey,
-        label: activeDays <= 7 ? formatShortDay(dateKey) : formatMonthDay(dateKey),
-        fullDate: formatMonthDay(dateKey),
-        minutes,
-        hitTarget: minutes >= dailyTargetMinutes,
-      };
-    });
-  }, [minutesByDate, activeDays, dailyTargetMinutes]);
 
   // Previous N-day comparison window (immediately preceding activeDays)
   const previousPeriod = useMemo(() => {
@@ -119,9 +210,19 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
   // KPI metrics for selected range
   const stats = useMemo(() => {
-    const totalMinutes = chartData.reduce((sum, d) => sum + d.minutes, 0);
-    const activeDaysCount = chartData.filter((d) => d.minutes > 0).length;
-    const targetMetDays = chartData.filter((d) => d.hitTarget).length;
+    let totalMinutes = 0;
+    let activeDaysCount = 0;
+    let targetMetDays = 0;
+
+    for (let idx = 0; idx < activeDays; idx += 1) {
+      const offset = -(activeDays - 1 - idx);
+      const dateKey = getOffsetDateKey(offset);
+      const minutes = Math.round(minutesByDate.get(dateKey) || 0);
+      totalMinutes += minutes;
+      if (minutes > 0) activeDaysCount += 1;
+      if (minutes >= dailyTargetMinutes) targetMetDays += 1;
+    }
+
     const avgMinutesPerDay = activeDays > 0 ? Math.round(totalMinutes / activeDays) : 0;
 
     const allActiveDates = new Set<string>();
@@ -137,7 +238,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       avgMinutesPerDay,
       streak,
     };
-  }, [chartData, filteredSessions, activeDays]);
+  }, [minutesByDate, filteredSessions, activeDays, dailyTargetMinutes]);
 
   // LeetCode stats within current N-day window
   const leetCodePeriodStats = useMemo(() => {
@@ -162,19 +263,22 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     return { solvedCount, totalReviews, soloReviews, soloRate };
   }, [leetcodeProblems, activeDays]);
 
-  // Breakdown by task within selected range
+  // Breakdown by task within selected range (colored by each task's chosen color)
   const taskBreakdown = useMemo(() => {
     const startDateKey = getOffsetDateKey(-(activeDays - 1));
     const map = new Map<
       string,
-      { title: string; category: string; minutes: number; count: number }
+      { title: string; category: string; color: string; minutes: number; count: number }
     >();
 
     for (const s of sessions) {
       if (s.date < startDateKey) continue;
+      const matchedTask = taskById.get(s.taskId);
+      const color = matchedTask ? getTaskColor(matchedTask) : ONE_TIME_DEFAULT_COLOR;
       const existing = map.get(s.taskId) || {
-        title: s.taskTitle,
-        category: s.category,
+        title: matchedTask?.title || s.taskTitle,
+        category: matchedTask?.category || s.category,
+        color,
         minutes: 0,
         count: 0,
       };
@@ -192,7 +296,16 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       ...item,
       sharePercent: Math.round((item.minutes / maxMinutes) * 100),
     }));
-  }, [sessions, activeDays]);
+  }, [sessions, activeDays, taskById]);
+
+  const toggleSeriesVisibility = (key: string) => {
+    setHiddenSeriesKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Comparison deltas
   const minutesDelta = stats.totalMinutes - previousPeriod.totalMinutes;
@@ -216,10 +329,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const isDark = theme === 'dark';
   const gridColor = isDark ? '#1E293B' : '#E2E8F0';
   const tickColor = isDark ? '#94A3B8' : '#64748B';
-  const barDefault = isDark ? '#334155' : '#CBD5E1';
-  const barHit = isDark ? '#14B8A6' : '#0F766E';
-  const barPartial = isDark ? '#0D9488' : '#5EEAD4';
-
   const currentRangeLabel = `${formatMonthDay(getOffsetDateKey(-(activeDays - 1)))} – Today`;
 
   const renderDelta = (delta: number, suffix: string, pct?: number | null) => {
@@ -263,10 +372,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-            Study Analytics
+            Activity Analytics
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Track consistency, compare periods, or enter any custom day range to inspect instantly.
+            Compare each daily habit on its own color-coded trajectory line, or inspect any custom day range.
           </p>
         </div>
 
@@ -277,7 +386,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             onChange={(e) => setTaskFilter(e.target.value)}
             className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
           >
-            <option value="all">All Tasks</option>
+            <option value="all">All Activities</option>
             {tasks.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.title}
@@ -345,7 +454,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       {/* 4-Column Summary Strip */}
       <section className="grid grid-cols-2 lg:grid-cols-4 bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl divide-y lg:divide-y-0 sm:divide-x divide-slate-200 dark:divide-slate-800">
         <div className="p-5 space-y-1">
-          <div className="text-xs text-slate-500 dark:text-slate-400">Total Studied</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400">Total Logged</div>
           <div className="text-2xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
             {formatMinutesCompact(stats.totalMinutes)}
           </div>
@@ -388,6 +497,214 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
       </section>
 
+      {/* Cricket-Worm Style Multi-Line Activity Graph */}
+      <section className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+              {lineMode === 'worm'
+                ? `Habit Progress Worm (${activeDays} ${activeDays === 1 ? 'Day' : 'Days'})`
+                : `Daily Activity Lines (${activeDays} ${activeDays === 1 ? 'Day' : 'Days'})`}
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              {lineMode === 'worm'
+                ? 'Cumulative minutes per habit across the selected days — click any label below to show or hide a line'
+                : 'Minutes logged each day per habit color — one-time tasks share the neutral line'}
+            </p>
+          </div>
+
+          <div className="inline-flex items-center p-1 bg-slate-100 dark:bg-[#0D1117] border border-slate-200/80 dark:border-slate-800 rounded-lg self-start sm:self-auto shrink-0">
+            <button
+              type="button"
+              onClick={() => setLineMode('worm')}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                lineMode === 'worm'
+                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Cumulative Worm
+            </button>
+            <button
+              type="button"
+              onClick={() => setLineMode('daily')}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                lineMode === 'daily'
+                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Daily Minutes
+            </button>
+          </div>
+        </div>
+
+        {/* Interactive Color-Coded Series Legend */}
+        {graphSeries.length > 0 && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+            {graphSeries.map((ser) => {
+              const isHidden = hiddenSeriesKeys.has(ser.key);
+              return (
+                <button
+                  key={ser.key}
+                  type="button"
+                  onClick={() => toggleSeriesVisibility(ser.key)}
+                  className={`inline-flex items-center gap-2 transition-opacity cursor-pointer ${
+                    isHidden ? 'opacity-35 line-through' : 'opacity-100'
+                  }`}
+                  title={isHidden ? `Show ${ser.label}` : `Hide ${ser.label}`}
+                >
+                  <span
+                    className="w-3 h-1 rounded-full shrink-0"
+                    style={{ backgroundColor: ser.color }}
+                  />
+                  <span className="font-medium text-slate-700 dark:text-slate-300">
+                    {ser.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {stats.totalMinutes === 0 ? (
+          <div className="py-12 text-center space-y-3">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+              No sessions logged in the last {activeDays}{' '}
+              {activeDays === 1 ? 'day' : 'days'}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+              Run the timer on Today or log a session manually to watch each habit&apos;s colored line climb here.
+            </p>
+            <button
+              type="button"
+              onClick={() => onOpenManualLog(tasks[0]?.id || '')}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-teal-700 hover:bg-teal-600 text-white text-xs font-medium rounded-lg cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Log First Session</span>
+            </button>
+          </div>
+        ) : (
+          <div className="h-80 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={lineChartData} margin={{ top: 12, right: 12, left: -10, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: tickColor, fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  interval={xAxisInterval}
+                />
+                <YAxis
+                  tick={{ fill: tickColor, fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(val: number) =>
+                    val >= 60 ? `${Math.round((val / 60) * 10) / 10}h` : `${val}m`
+                  }
+                />
+                <Tooltip
+                  content={({ active, payload }) => {
+                    if (!active || !payload || payload.length === 0) return null;
+                    const row = payload[0]?.payload as Record<string, string | number> | undefined;
+                    if (!row) return null;
+
+                    const visibleItems = graphSeries
+                      .filter((ser) => !hiddenSeriesKeys.has(ser.key))
+                      .map((ser) => ({
+                        ...ser,
+                        value: Number(row[ser.key] || 0),
+                        dayMins: Number(row[`daily_${ser.key}`] || 0),
+                      }))
+                      .sort((a, b) => b.value - a.value);
+
+                    return (
+                      <div className="bg-white dark:bg-[#0D1117] border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg px-3.5 py-2.5 text-xs min-w-[200px] space-y-2">
+                        <div className="font-semibold text-slate-900 dark:text-slate-100 border-b border-slate-100 dark:border-slate-800 pb-1.5">
+                          {row.fullDate}
+                        </div>
+                        <div className="space-y-1.5">
+                          {visibleItems.map((item) => (
+                            <div
+                              key={item.key}
+                              className="flex items-center justify-between gap-4"
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                                  style={{ backgroundColor: item.color }}
+                                />
+                                <span className="text-slate-700 dark:text-slate-300 truncate">
+                                  {item.label}
+                                </span>
+                              </span>
+                              <span className="font-mono tabular-nums font-medium text-slate-900 dark:text-slate-100 shrink-0">
+                                {formatMinutesCompact(item.value)}
+                                {lineMode === 'worm' && item.dayMins > 0 && (
+                                  <span className="text-[11px] text-teal-700 dark:text-teal-400 ml-1">
+                                    (+{formatMinutesCompact(item.dayMins)})
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }}
+                />
+                {graphSeries.map((ser) => {
+                  if (hiddenSeriesKeys.has(ser.key)) return null;
+                  return (
+                    <Line
+                      key={ser.key}
+                      type="monotone"
+                      dataKey={ser.key}
+                      name={ser.label}
+                      stroke={ser.color}
+                      strokeWidth={ser.isOneTime ? 2 : 2.5}
+                      strokeDasharray={ser.isOneTime ? '5 4' : undefined}
+                      dot={(dotProps) => {
+                        const { cx, cy, payload, index } = dotProps;
+                        if (typeof cx !== 'number' || typeof cy !== 'number') {
+                          return <g key={`${ser.key}-empty-${index}`} />;
+                        }
+                        const dayMins = Number(payload?.[`daily_${ser.key}`] || 0);
+                        // Show crisp marker dots on days where this habit had activity (like wickets/milestones on a cricket worm)
+                        if (dayMins <= 0 || activeDays > 45) {
+                          return <g key={`${ser.key}-none-${index}`} />;
+                        }
+                        return (
+                          <circle
+                            key={`${ser.key}-dot-${index}`}
+                            cx={cx}
+                            cy={cy}
+                            r={3.5}
+                            fill={ser.color}
+                            stroke={isDark ? '#141923' : '#FFFFFF'}
+                            strokeWidth={1.5}
+                          />
+                        );
+                      }}
+                      activeDot={{
+                        r: 5.5,
+                        fill: ser.color,
+                        stroke: isDark ? '#0D1117' : '#FFFFFF',
+                        strokeWidth: 2,
+                      }}
+                      isAnimationActive={true}
+                      animationDuration={450}
+                    />
+                  );
+                })}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </section>
+
       {/* Period Review Comparison Card (Current N Days vs Previous N Days) */}
       <section className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2">
@@ -400,11 +717,15 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             </p>
           </div>
           {topTask && (
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              Top focus:{' '}
+            <div className="text-xs text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5">
+              <span>Top focus:</span>
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: topTask.color }}
+              />
               <span className="font-medium text-slate-900 dark:text-slate-100">
                 {topTask.title}
-              </span>{' '}
+              </span>
               <span className="font-mono tabular-nums text-teal-700 dark:text-teal-400">
                 ({formatMinutesCompact(topTask.minutes)})
               </span>
@@ -414,7 +735,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-1">
           <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-[#0D1117] border border-slate-100 dark:border-slate-800/80 space-y-1.5">
-            <div className="text-xs text-slate-500 dark:text-slate-400">Total Study Time</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Total Logged Time</div>
             <div className="flex items-baseline gap-2 font-mono tabular-nums">
               <span className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                 {formatMinutesCompact(stats.totalMinutes)}
@@ -473,103 +794,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
       </section>
 
-      {/* Main Bar Chart */}
-      <section className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              Daily Study Duration ({activeDays} {activeDays === 1 ? 'Day' : 'Days'})
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Dashed line marks your {formatMinutesCompact(dailyTargetMinutes)} daily target
-            </p>
-          </div>
-          <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-xs bg-teal-700 dark:bg-teal-400" />
-              <span>Target met</span>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-xs bg-teal-300 dark:bg-teal-700" />
-              <span>Partial</span>
-            </span>
-          </div>
-        </div>
-
-        {stats.totalMinutes === 0 ? (
-          <div className="py-12 text-center space-y-3">
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-              No study sessions logged in the last {activeDays}{' '}
-              {activeDays === 1 ? 'day' : 'days'}
-            </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-              Run the timer on Today or log a completed session manually to see your daily chart appear here.
-            </p>
-            <button
-              type="button"
-              onClick={() => onOpenManualLog(tasks[0]?.id || '')}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-teal-700 hover:bg-teal-600 text-white text-xs font-medium rounded-lg cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Log First Session</span>
-            </button>
-          </div>
-        ) : (
-          <div className="h-72 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 12, right: 8, left: -16, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-                <XAxis
-                  dataKey="label"
-                  tick={{ fill: tickColor, fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                  interval={xAxisInterval}
-                />
-                <YAxis
-                  tick={{ fill: tickColor, fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                  unit="m"
-                />
-                <Tooltip
-                  cursor={{ fill: isDark ? 'rgba(148,163,184,0.08)' : 'rgba(15,23,42,0.04)' }}
-                  contentStyle={{
-                    backgroundColor: isDark ? '#0D1117' : '#FFFFFF',
-                    borderColor: isDark ? '#334155' : '#E2E8F0',
-                    borderRadius: '10px',
-                    fontSize: '12px',
-                    color: isDark ? '#F1F5F9' : '#0F172A',
-                  }}
-                  formatter={(value: unknown) => [formatMinutesCompact(Number(value)), 'Studied']}
-                  labelFormatter={(_label, payload) => payload?.[0]?.payload?.fullDate || ''}
-                />
-                <ReferenceLine
-                  y={dailyTargetMinutes}
-                  stroke={isDark ? '#F59E0B' : '#D97706'}
-                  strokeDasharray="4 4"
-                  strokeWidth={1.5}
-                />
-                <Bar dataKey="minutes" radius={[6, 6, 0, 0]} maxBarSize={38}>
-                  {chartData.map((entry) => (
-                    <Cell
-                      key={entry.dateKey}
-                      fill={
-                        entry.minutes === 0
-                          ? barDefault
-                          : entry.hitTarget
-                          ? barHit
-                          : barPartial
-                      }
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </section>
-
       {/* Bottom 2-Column Row: 30-Day Activity Heatmap & Time by Task */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ActivityHeatmap
@@ -581,10 +805,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <section className="bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              Time by Task
+              Time by Activity
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Total study time over the last {activeDays}{' '}
+              Total time logged over the last {activeDays}{' '}
               {activeDays === 1 ? 'day' : 'days'}
             </p>
           </div>
@@ -599,10 +823,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 <div key={item.id} className="space-y-1.5">
                   <div className="flex items-center justify-between gap-2 text-xs">
                     <div className="min-w-0">
-                      <span className="font-medium text-slate-900 dark:text-slate-100 truncate block">
-                        {item.title}
+                      <span className="font-medium text-slate-900 dark:text-slate-100 truncate flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="truncate">{item.title}</span>
                       </span>
-                      <span className="text-slate-500 dark:text-slate-400">
+                      <span className="text-slate-500 dark:text-slate-400 pl-4.5 block">
                         {item.category} · {item.count}{' '}
                         {item.count === 1 ? 'session' : 'sessions'}
                       </span>
@@ -613,8 +841,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   </div>
                   <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-teal-600 dark:bg-teal-500 rounded-full"
-                      style={{ width: `${item.sharePercent}%` }}
+                      className="h-full rounded-full"
+                      style={{ width: `${item.sharePercent}%`, backgroundColor: item.color }}
                     />
                   </div>
                 </div>

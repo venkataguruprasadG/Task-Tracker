@@ -1,16 +1,23 @@
-import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Check, X } from 'lucide-react';
 import { RepeatType, StudyTask } from '../types/study';
-import { getDateKey } from '../utils/storage';
+import {
+  getDateKey,
+  HABIT_COLOR_PALETTE,
+  ONE_TIME_DEFAULT_COLOR,
+  pickNextUniqueHabitColor,
+} from '../utils/storage';
 
 interface TaskModalProps {
   isOpen: boolean;
   editingTask: StudyTask | null;
+  existingTasks: StudyTask[];
   onClose: () => void;
   onSave: (data: {
     title: string;
     category: string;
     repeat: RepeatType;
+    color: string;
     targetMinutes: number;
     carryOverMissed: boolean;
     startDate: string;
@@ -28,15 +35,27 @@ const TARGET_PRESETS = [
 export const TaskModal: React.FC<TaskModalProps> = ({
   isOpen,
   editingTask,
+  existingTasks,
   onClose,
   onSave,
 }) => {
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState('NxtWave');
+  const [category, setCategory] = useState('');
   const [repeat, setRepeat] = useState<RepeatType>('daily');
+  const [color, setColor] = useState(HABIT_COLOR_PALETTE[0].hex);
   const [targetMinutes, setTargetMinutes] = useState(60);
   const [carryOverMissed, setCarryOverMissed] = useState(true);
   const [startDate, setStartDate] = useState(getDateKey());
+
+  const usedDailyColors = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of existingTasks) {
+      if (t.repeat === 'daily' && t.id !== editingTask?.id && t.color) {
+        map.set(t.color.toLowerCase(), t.title);
+      }
+    }
+    return map;
+  }, [existingTasks, editingTask?.id]);
 
   useEffect(() => {
     if (isOpen) {
@@ -44,29 +63,38 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         setTitle(editingTask.title);
         setCategory(editingTask.category);
         setRepeat(editingTask.repeat);
+        setColor(
+          editingTask.repeat === 'daily'
+            ? editingTask.color || pickNextUniqueHabitColor(existingTasks, editingTask.id)
+            : pickNextUniqueHabitColor(existingTasks, editingTask.id)
+        );
         setTargetMinutes(editingTask.targetMinutes);
         setCarryOverMissed(editingTask.carryOverMissed !== false);
         setStartDate(editingTask.startDate || getDateKey());
       } else {
         setTitle('');
-        setCategory('NxtWave');
+        setCategory('');
         setRepeat('daily');
+        setColor(pickNextUniqueHabitColor(existingTasks));
         setTargetMinutes(60);
         setCarryOverMissed(true);
         setStartDate(getDateKey());
       }
     }
-  }, [isOpen, editingTask]);
+  }, [isOpen, editingTask, existingTasks]);
 
   if (!isOpen) return null;
+
+  const colorOwner = usedDailyColors.get(color.toLowerCase());
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
     onSave({
       title: title.trim(),
-      category: category.trim() || 'General',
+      category: category.trim() || title.trim(),
       repeat,
+      color: repeat === 'daily' ? color : ONE_TIME_DEFAULT_COLOR,
       targetMinutes: Math.max(5, Number(targetMinutes) || 30),
       carryOverMissed: repeat === 'daily' ? carryOverMissed : false,
       startDate: startDate || getDateKey(),
@@ -81,11 +109,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl overflow-hidden"
+        className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl overflow-hidden max-h-[92vh] overflow-y-auto"
       >
         <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-            {editingTask ? 'Edit Task' : 'New Learning Task'}
+            {editingTask ? 'Edit Task' : 'New Activity / Habit'}
           </h2>
           <button
             type="button"
@@ -112,7 +140,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
               autoFocus
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Daily LeetCode Problem"
+              placeholder="e.g. NxtWave Learning, Anime Content, C++ Topic"
               className="w-full bg-slate-50 dark:bg-[#0D1117] border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none"
             />
           </div>
@@ -123,14 +151,14 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                 htmlFor="task-category"
                 className="block text-xs font-medium text-slate-700 dark:text-slate-300"
               >
-                Course / Label
+                Category / Label
               </label>
               <input
                 id="task-category"
                 type="text"
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                placeholder="e.g. NxtWave, LeetCode, C++, DSA"
+                placeholder="e.g. NxtWave, Creative, DSA"
                 className="w-full bg-slate-50 dark:bg-[#0D1117] border border-slate-200 dark:border-slate-700 rounded-lg px-3.5 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none"
               />
             </div>
@@ -149,7 +177,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
                       : 'text-slate-500 dark:text-slate-400'
                   }`}
                 >
-                  Daily
+                  Daily Habit
                 </button>
                 <button
                   type="button"
@@ -165,6 +193,77 @@ export const TaskModal: React.FC<TaskModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Graph Line Color Picker */}
+          {repeat === 'daily' ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Graph Line Color
+                </span>
+                <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                  {colorOwner ? `Also used by ${colorOwner}` : color.toUpperCase()}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {HABIT_COLOR_PALETTE.map((swatch) => {
+                  const isSelected = color.toLowerCase() === swatch.hex.toLowerCase();
+                  const isTaken = usedDailyColors.has(swatch.hex.toLowerCase());
+                  return (
+                    <button
+                      key={swatch.hex}
+                      type="button"
+                      onClick={() => setColor(swatch.hex)}
+                      title={
+                        isTaken
+                          ? `${swatch.name} (used by ${usedDailyColors.get(swatch.hex.toLowerCase())})`
+                          : swatch.name
+                      }
+                      aria-label={`Select ${swatch.name} color`}
+                      style={{ backgroundColor: swatch.hex }}
+                      className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform cursor-pointer relative ${
+                        isSelected
+                          ? 'ring-2 ring-offset-2 ring-slate-900 dark:ring-white dark:ring-offset-[#141923] scale-105'
+                          : isTaken
+                          ? 'opacity-45 hover:opacity-90'
+                          : 'hover:scale-105'
+                      }`}
+                    >
+                      {isSelected && <Check className="w-3.5 h-3.5 text-white stroke-[2.75]" />}
+                    </button>
+                  );
+                })}
+
+                <label
+                  title="Pick custom color"
+                  className="w-7 h-7 rounded-full border border-dashed border-slate-300 dark:border-slate-600 flex items-center justify-center text-[10px] font-mono text-slate-500 dark:text-slate-400 hover:border-slate-500 cursor-pointer overflow-hidden relative"
+                >
+                  <span>+</span>
+                  <input
+                    type="color"
+                    aria-label="Custom hex color"
+                    value={color}
+                    onChange={(e) => setColor(e.target.value)}
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                </label>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Each daily habit plots as its own colored line in Analytics. Faded dots are already assigned to another habit.
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg bg-slate-50 dark:bg-[#0D1117] border border-slate-200/80 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
+              <span
+                className="w-3 h-3 rounded-full shrink-0"
+                style={{ backgroundColor: ONE_TIME_DEFAULT_COLOR }}
+              />
+              <span>
+                One-time tasks automatically share the default neutral line color on the Analytics graph.
+              </span>
+            </div>
+          )}
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">

@@ -11,6 +11,7 @@ export interface StudyTask {
   title: string;
   category: string;
   repeat: RepeatType;
+  color?: string; // Unique hex color for daily habits; one-time tasks use default neutral color
   targetMinutes: number; // e.g., 30, 45, 60 (flexible — sessions can extend beyond this)
   startDate: string; // YYYY-MM-DD when daily tracking begins
   carryOverMissed: boolean; // If true, missed previous days appear as "Due from Yesterday"
