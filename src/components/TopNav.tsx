@@ -1,5 +1,5 @@
 import React from 'react';
-import { Moon, Plus, Sun } from 'lucide-react';
+import { Bell, Moon, Plus, Sun } from 'lucide-react';
 import { ViewTab } from '../types/study';
 import { formatClock } from '../utils/storage';
 
@@ -7,6 +7,8 @@ interface TopNavProps {
   activeTab: ViewTab;
   onSelectTab: (tab: ViewTab) => void;
   onOpenNewTask: () => void;
+  onOpenReminders: () => void;
+  hasRemindersActive: boolean;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   isTimerRunning: boolean;
@@ -18,6 +20,8 @@ export const TopNav: React.FC<TopNavProps> = ({
   activeTab,
   onSelectTab,
   onOpenNewTask,
+  onOpenReminders,
+  hasRemindersActive,
   theme,
   onToggleTheme,
   isTimerRunning,
@@ -89,6 +93,20 @@ export const TopNav: React.FC<TopNavProps> = ({
               <span>{formatClock(timerSeconds)}</span>
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={onOpenReminders}
+            className={`p-2 rounded-lg transition-colors cursor-pointer ${
+              hasRemindersActive
+                ? 'text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-500/15'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+            aria-label="Reminders and sound settings"
+            title="Reminders & sound"
+          >
+            <Bell className="w-4 h-4" />
+          </button>
 
           <button
             type="button"

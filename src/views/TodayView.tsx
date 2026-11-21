@@ -64,6 +64,8 @@ interface TodayViewProps {
   onOpenEditTask: (task: StudyTask) => void;
   onDeleteTask: (taskId: string) => void;
   onOpenManualLog: (taskId: string, forDate?: string) => void;
+  onEnterMiniMode: () => void;
+  isElectron: boolean;
 }
 
 export const TodayView: React.FC<TodayViewProps> = ({
@@ -92,6 +94,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
   onOpenEditTask,
   onDeleteTask,
   onOpenManualLog,
+  onEnterMiniMode,
+  isElectron,
 }) => {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const todayKey = getDateKey();
@@ -479,6 +483,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
         onReset={onResetTimer}
         onFinishAndSave={onFinishTimer}
         onOpenManualLog={onOpenManualLog}
+        onEnterMiniMode={onEnterMiniMode}
+        isElectron={isElectron}
       />
 
       {/* Clean 3-Stat Daily Summary Strip */}

@@ -1,9 +1,16 @@
-import { ActiveTimerState, LeetCodeProblem, StudySession, StudyTask } from '../types/study';
+import {
+  ActiveTimerState,
+  LeetCodeProblem,
+  ReminderSettings,
+  StudySession,
+  StudyTask,
+} from '../types/study';
 
 const TASKS_KEY = 'daily_study_tasks_v1';
 const SESSIONS_KEY = 'daily_study_sessions_v1';
 const TIMER_KEY = 'daily_study_active_timer_v1';
 const THEME_KEY = 'daily_study_theme_v1';
+const REMINDER_SETTINGS_KEY = 'daily_study_reminder_settings_v1';
 const LEETCODE_PROBLEMS_KEY = 'daily_study_leetcode_problems_v1';
 const LEETCODE_MIGRATION_KEY = 'daily_study_migrated_leetcode_v1';
 const CPP_DSA_MIGRATION_KEY = 'daily_study_migrated_cpp_dsa_v1';
@@ -460,3 +467,41 @@ export function saveTheme(theme: 'light' | 'dark'): void {
     // ignore
   }
 }
+
+export function getDefaultReminderSettings(): ReminderSettings {
+  return {
+    soundEnabled: true,
+    notificationsEnabled: false,
+    dailyReminderEnabled: false,
+    dailyReminderTime: '20:00',
+  };
+}
+
+export function loadReminderSettings(): ReminderSettings {
+  try {
+    const raw = localStorage.getItem(REMINDER_SETTINGS_KEY);
+    if (!raw) return getDefaultReminderSettings();
+    const parsed = JSON.parse(raw) as Partial<ReminderSettings>;
+    return {
+      soundEnabled: parsed.soundEnabled !== undefined ? Boolean(parsed.soundEnabled) : true,
+      notificationsEnabled: Boolean(parsed.notificationsEnabled),
+      dailyReminderEnabled: Boolean(parsed.dailyReminderEnabled),
+      dailyReminderTime:
+        typeof parsed.dailyReminderTime === 'string' && /^\d{2}:\d{2}$/.test(parsed.dailyReminderTime)
+          ? parsed.dailyReminderTime
+          : '20:00',
+      lastDailyReminderDate: parsed.lastDailyReminderDate,
+    };
+  } catch {
+    return getDefaultReminderSettings();
+  }
+}
+
+export function saveReminderSettings(settings: ReminderSettings): void {
+  try {
+    localStorage.setItem(REMINDER_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // ignore
+  }
+}
+

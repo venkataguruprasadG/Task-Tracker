@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Bell, X } from 'lucide-react';
 import {
   ActiveTimerState,
   LeetCodeDifficulty,
   LeetCodeProblem,
+  ReminderSettings,
   RepeatType,
   StudySession,
   StudyTask,
@@ -20,19 +22,24 @@ import {
   isLeetCodeTask,
   loadActiveTimer,
   loadLeetCodeProblems,
+  loadReminderSettings,
   loadSessions,
   loadTasks,
   loadTheme,
   saveActiveTimer,
   saveLeetCodeProblems,
+  saveReminderSettings,
   saveSessions,
   saveTasks,
   saveTheme,
 } from './utils/storage';
+import { playTargetCompleteChime, sendDesktopNotification } from './utils/sound';
 import { TopNav } from './components/TopNav';
 import { TaskModal } from './components/TaskModal';
 import { ManualLogModal } from './components/ManualLogModal';
 import { LeetCodeLogModal } from './components/LeetCodeLogModal';
+import { ReminderSettingsModal } from './components/ReminderSettingsModal';
+import { MiniTimerBar } from './components/MiniTimerBar';
 import { TodayView } from './views/TodayView';
 import { RevisionsView } from './views/RevisionsView';
 import { AnalyticsView } from './views/AnalyticsView';
@@ -79,6 +86,34 @@ export default function App() {
   const [lcModalTaskId, setLcModalTaskId] = useState<string | null>(null);
   const [lcModalDateKey, setLcModalDateKey] = useState<string>(getDateKey());
 
+  // Reminders, sound chime & notification toast
+  const [reminderSettings, setReminderSettings] = useState<ReminderSettings>(() =>
+    loadReminderSettings()
+  );
+  const [reminderModalOpen, setReminderModalOpen] = useState(false);
+  const [toastBanner, setToastBanner] = useState<{
+    id: number;
+    title: string;
+    body?: string;
+  } | null>(null);
+
+  // Mini Focus Mode (Electron always-on-top compact window + Web floating mini bar)
+  const isElectron = Boolean(typeof window !== 'undefined' && window.electronAPI?.isElectron);
+  const [electronMiniActive, setElectronMiniActive] = useState(false);
+  const [webFloatingMiniOpen, setWebFloatingMiniOpen] = useState(false);
+  const [floatingDismissed, setFloatingDismissed] = useState(false);
+
+  const chimedKeysRef = useRef<Set<string>>(new Set());
+  const prevTotalSecondsRef = useRef<number>(0);
+
+  const showToast = (title: string, body?: string) => {
+    const id = Date.now();
+    setToastBanner({ id, title, body });
+    window.setTimeout(() => {
+      setToastBanner((current) => (current?.id === id ? null : current));
+    }, 6500);
+  };
+
   // Apply light / dark class on <html>
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -101,6 +136,10 @@ export default function App() {
   useEffect(() => {
     saveActiveTimer(timer);
   }, [timer]);
+
+  useEffect(() => {
+    saveReminderSettings(reminderSettings);
+  }, [reminderSettings]);
 
   // Keep selectedTaskId valid
   useEffect(() => {
@@ -146,6 +185,148 @@ export default function App() {
       document.title = 'Daily Study — Academic Task Tracker';
     }
   }, [timer?.isRunning, timer?.taskId, timer?.revisionProblemId, elapsedSeconds, tasks, leetcodeProblems]);
+
+  // Re-show floating bar when switching tabs with an active timer
+  useEffect(() => {
+    setFloatingDismissed(false);
+  }, [activeTab]);
+
+  // Target completion sound chime & desktop notification (fires once when crossing target)
+  const loggedSecondsForActiveSelection = useMemo(() => {
+    const activeId = timer?.taskId || selectedTaskId;
+    const activeDate = timer?.forDate || selectedForDate || getDateKey();
+    if (timer?.revisionProblemId || activeRevisionProblem) return 0;
+    return sessions
+      .filter(
+        (s) =>
+          !s.revisionProblemId && s.taskId === activeId && (s.forDate || s.date) === activeDate
+      )
+      .reduce((sum, s) => sum + s.durationSeconds, 0);
+  }, [sessions, timer, selectedTaskId, selectedForDate, activeRevisionProblem]);
+
+  useEffect(() => {
+    if (!timer?.isRunning || timer.revisionProblemId) {
+      prevTotalSecondsRef.current = 0;
+      return;
+    }
+
+    const activeTask = tasks.find((t) => t.id === timer.taskId);
+    if (!activeTask) return;
+
+    const targetSeconds = activeTask.targetMinutes * 60;
+    const currentTotal = loggedSecondsForActiveSelection + elapsedSeconds;
+    const key = `${timer.taskId}__${timer.forDate}`;
+
+    if (
+      prevTotalSecondsRef.current > 0 &&
+      prevTotalSecondsRef.current < targetSeconds &&
+      currentTotal >= targetSeconds &&
+      !chimedKeysRef.current.has(key)
+    ) {
+      chimedKeysRef.current.add(key);
+      if (reminderSettings.soundEnabled) {
+        playTargetCompleteChime();
+      }
+      const msg = `${activeTask.title} hit its ${activeTask.targetMinutes}m target — keep going for extra time or save whenever ready.`;
+      if (reminderSettings.notificationsEnabled) {
+        sendDesktopNotification('Target Reached · Daily Study', msg);
+      }
+      showToast(`Target reached · ${activeTask.title}`, 'Timer continues counting extra study time.');
+    }
+
+    prevTotalSecondsRef.current = currentTotal;
+  }, [
+    timer?.isRunning,
+    timer?.taskId,
+    timer?.forDate,
+    timer?.revisionProblemId,
+    elapsedSeconds,
+    loggedSecondsForActiveSelection,
+    tasks,
+    reminderSettings.soundEnabled,
+    reminderSettings.notificationsEnabled,
+  ]);
+
+  // Daily unfinished-task reminder clock check (runs every 30 seconds)
+  useEffect(() => {
+    if (!reminderSettings.dailyReminderEnabled) return;
+
+    const checkDailyReminder = () => {
+      const todayKey = getDateKey();
+      if (reminderSettings.lastDailyReminderDate === todayKey) return;
+
+      const now = new Date();
+      const nowHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(
+        now.getMinutes()
+      ).padStart(2, '0')}`;
+
+      if (nowHHMM < reminderSettings.dailyReminderTime) return;
+
+      const pendingDaily = tasks.filter(
+        (t) => t.repeat === 'daily' && !t.archived && !t.completedDates.includes(todayKey)
+      ).length;
+      const pendingRevisions = leetcodeProblems.filter(
+        (p) => p.nextReviewDate <= todayKey
+      ).length;
+
+      if (pendingDaily === 0 && pendingRevisions === 0) return;
+
+      const parts: string[] = [];
+      if (pendingDaily > 0) {
+        parts.push(`${pendingDaily} daily ${pendingDaily === 1 ? 'task' : 'tasks'}`);
+      }
+      if (pendingRevisions > 0) {
+        parts.push(
+          `${pendingRevisions} LeetCode ${pendingRevisions === 1 ? 'revision' : 'revisions'}`
+        );
+      }
+      const body = `Still open today: ${parts.join(' and ')}.`;
+
+      if (reminderSettings.soundEnabled) {
+        playTargetCompleteChime();
+      }
+      if (reminderSettings.notificationsEnabled) {
+        sendDesktopNotification('Daily Study Reminder', body);
+      }
+      showToast('Daily Study Reminder', body);
+
+      setReminderSettings((prev) => ({
+        ...prev,
+        lastDailyReminderDate: todayKey,
+      }));
+    };
+
+    checkDailyReminder();
+    const id = window.setInterval(checkDailyReminder, 30000);
+    return () => window.clearInterval(id);
+  }, [
+    reminderSettings.dailyReminderEnabled,
+    reminderSettings.dailyReminderTime,
+    reminderSettings.lastDailyReminderDate,
+    reminderSettings.soundEnabled,
+    reminderSettings.notificationsEnabled,
+    tasks,
+    leetcodeProblems,
+  ]);
+
+  const handleEnterMiniMode = async () => {
+    if (isElectron && window.electronAPI) {
+      const active = await window.electronAPI.setMiniMode(true);
+      setElectronMiniActive(active);
+    } else {
+      setWebFloatingMiniOpen(true);
+      setFloatingDismissed(false);
+    }
+  };
+
+  const handleExitMiniMode = async () => {
+    if (isElectron && window.electronAPI && electronMiniActive) {
+      await window.electronAPI.setMiniMode(false);
+      setElectronMiniActive(false);
+    }
+    setWebFloatingMiniOpen(false);
+    setActiveTab('today');
+  };
 
   const markTaskDateComplete = (taskId: string, dateKey: string) => {
     setTasks((prev) =>
@@ -587,6 +768,57 @@ export default function App() {
     ? `Completing Daily LeetCode Problem (${formatReadableDate(lcModalDateKey)})`
     : 'Add a solved problem directly to your spaced repetition queue';
 
+  const activeMiniTask =
+    tasks.find((t) => t.id === (timer?.taskId || selectedTaskId)) || tasks[0] || null;
+  const activeMiniRevision =
+    (timer?.revisionProblemId
+      ? leetcodeProblems.find((p) => p.id === timer.revisionProblemId)
+      : activeRevisionProblem) || null;
+
+  const handleMiniStart = () => {
+    if (!activeMiniTask) return;
+    handleStartTimer(
+      activeMiniTask.id,
+      selectedForDate || getDateKey(),
+      activeMiniRevision?.id
+    );
+  };
+
+  const handleMiniQuickFinish = () => {
+    if (!timer) return;
+    // If finishing a revision, expand to full window so user can pick Solo vs Used AI
+    if (timer.revisionProblemId) {
+      handleExitMiniMode();
+      handlePauseTimer();
+      showToast('Revision paused', 'Record Solved Solo or Used AI / Hints in the timer card.');
+      return;
+    }
+    handleFinishTimer('');
+  };
+
+  if (electronMiniActive) {
+    return (
+      <MiniTimerBar
+        variant="window"
+        task={activeMiniTask}
+        revisionProblem={activeMiniRevision}
+        timer={timer}
+        elapsedSeconds={elapsedSeconds}
+        loggedSecondsForSelection={loggedSecondsForActiveSelection}
+        timerMode={timerMode}
+        onStart={handleMiniStart}
+        onPause={handlePauseTimer}
+        onResume={handleResumeTimer}
+        onFinishQuick={handleMiniQuickFinish}
+        onExpand={handleExitMiniMode}
+      />
+    );
+  }
+
+  const showFloatingMini =
+    webFloatingMiniOpen ||
+    (Boolean(timer) && activeTab !== 'today' && !floatingDismissed);
+
   return (
     <div className="min-h-screen bg-[#F7F8FA] dark:bg-[#0D1117] text-slate-900 dark:text-slate-100 transition-colors">
       <TopNav
@@ -596,6 +828,10 @@ export default function App() {
           setEditingTask(null);
           setTaskModalOpen(true);
         }}
+        onOpenReminders={() => setReminderModalOpen(true)}
+        hasRemindersActive={
+          reminderSettings.dailyReminderEnabled || reminderSettings.notificationsEnabled
+        }
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
         isTimerRunning={Boolean(timer?.isRunning)}
@@ -603,7 +839,7 @@ export default function App() {
         dueRevisionsCount={dueRevisionsCount}
       />
 
-      <main className="pb-16">
+      <main className="pb-20">
         {activeTab === 'today' && (
           <TodayView
             tasks={tasks}
@@ -641,6 +877,8 @@ export default function App() {
               setManualLogForDate(forDate);
               setManualLogOpen(true);
             }}
+            onEnterMiniMode={handleEnterMiniMode}
+            isElectron={isElectron}
           />
         )}
 
@@ -662,6 +900,7 @@ export default function App() {
           <AnalyticsView
             tasks={tasks}
             sessions={sessions}
+            leetcodeProblems={leetcodeProblems}
             theme={theme}
             onOpenManualLog={(taskId) => {
               setManualLogTaskId(taskId);
@@ -686,6 +925,52 @@ export default function App() {
           />
         )}
       </main>
+
+      {/* Floating Compact Mini Focus Timer (Web mode or active timer on non-Today tabs) */}
+      {showFloatingMini && (
+        <MiniTimerBar
+          variant="floating"
+          task={activeMiniTask}
+          revisionProblem={activeMiniRevision}
+          timer={timer}
+          elapsedSeconds={elapsedSeconds}
+          loggedSecondsForSelection={loggedSecondsForActiveSelection}
+          timerMode={timerMode}
+          onStart={handleMiniStart}
+          onPause={handlePauseTimer}
+          onResume={handleResumeTimer}
+          onFinishQuick={handleMiniQuickFinish}
+          onExpand={handleExitMiniMode}
+          onCloseFloating={() => {
+            setWebFloatingMiniOpen(false);
+            setFloatingDismissed(true);
+          }}
+        />
+      )}
+
+      {/* Calm In-App Notification Toast */}
+      {toastBanner && (
+        <div
+          role="status"
+          className="fixed bottom-4 left-4 z-50 max-w-sm bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 rounded-xl shadow-xl px-4 py-3 flex items-start gap-3 border border-slate-800 dark:border-slate-200"
+        >
+          <Bell className="w-4 h-4 text-teal-400 dark:text-teal-600 mt-0.5 shrink-0" />
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="text-xs font-semibold">{toastBanner.title}</div>
+            {toastBanner.body && (
+              <div className="text-xs text-slate-300 dark:text-slate-600">{toastBanner.body}</div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setToastBanner(null)}
+            className="p-0.5 text-slate-400 hover:text-white dark:hover:text-slate-900 cursor-pointer"
+            aria-label="Dismiss notification"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       <TaskModal
         isOpen={taskModalOpen}
@@ -718,6 +1003,14 @@ export default function App() {
           setLcModalTaskId(null);
         }}
         onSubmit={handleSaveLeetCodeProblem}
+      />
+
+      <ReminderSettingsModal
+        isOpen={reminderModalOpen}
+        settings={reminderSettings}
+        onUpdate={setReminderSettings}
+        onClose={() => setReminderModalOpen(false)}
+        onTriggerTestToast={(msg) => showToast('Reminder Alert', msg)}
       />
     </div>
   );

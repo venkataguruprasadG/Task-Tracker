@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Check, Pause, Play, Plus, RotateCcw } from 'lucide-react';
+import { Check, Pause, PictureInPicture2, Play, Plus, RotateCcw } from 'lucide-react';
 import { ActiveTimerState, LeetCodeProblem, StudyTask, TimerMode } from '../types/study';
 import {
   formatClock,
@@ -28,6 +28,8 @@ interface FocusTimerCardProps {
   onReset: () => void;
   onFinishAndSave: (note: string, revisionOutcome?: 'solo' | 'assisted') => void;
   onOpenManualLog: (taskId: string, forDate?: string) => void;
+  onEnterMiniMode: () => void;
+  isElectron: boolean;
 }
 
 export const FocusTimerCard: React.FC<FocusTimerCardProps> = ({
@@ -48,6 +50,8 @@ export const FocusTimerCard: React.FC<FocusTimerCardProps> = ({
   onReset,
   onFinishAndSave,
   onOpenManualLog,
+  onEnterMiniMode,
+  isElectron,
 }) => {
   const [showSaveNote, setShowSaveNote] = useState(false);
   const [sessionNote, setSessionNote] = useState('');
@@ -229,29 +233,45 @@ export const FocusTimerCard: React.FC<FocusTimerCardProps> = ({
           )}
         </div>
 
-        {/* Mode Segmented Control */}
-        <div className="inline-flex items-center p-1 bg-slate-100 dark:bg-[#0D1117] border border-slate-200/80 dark:border-slate-800 rounded-lg self-start sm:self-end shrink-0">
+        {/* Mode Segmented Control & Mini Focus Trigger */}
+        <div className="flex items-center gap-2 self-start sm:self-end shrink-0 flex-wrap">
+          <div className="inline-flex items-center p-1 bg-slate-100 dark:bg-[#0D1117] border border-slate-200/80 dark:border-slate-800 rounded-lg">
+            <button
+              type="button"
+              onClick={() => onChangeMode('stopwatch')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                timerMode === 'stopwatch'
+                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Open Timer
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeMode('target')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                timerMode === 'target'
+                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Target Countdown
+            </button>
+          </div>
+
           <button
             type="button"
-            onClick={() => onChangeMode('stopwatch')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-              timerMode === 'stopwatch'
-                ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-            }`}
+            onClick={onEnterMiniMode}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200/80 dark:bg-[#0D1117] dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-800 rounded-lg text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors cursor-pointer whitespace-nowrap"
+            title={
+              isElectron
+                ? 'Switch to compact always-on-top mini window'
+                : 'Open compact floating mini timer'
+            }
           >
-            Open Timer
-          </button>
-          <button
-            type="button"
-            onClick={() => onChangeMode('target')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-              timerMode === 'target'
-                ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-            }`}
-          >
-            Target Countdown
+            <PictureInPicture2 className="w-3.5 h-3.5" />
+            <span>{isElectron ? 'Pin Mini' : 'Mini Timer'}</span>
           </button>
         </div>
       </div>

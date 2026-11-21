@@ -64,3 +64,12 @@ export interface LeetCodeProblem {
   note?: string;
   createdAt: string;
 }
+
+export interface ReminderSettings {
+  soundEnabled: boolean;
+  notificationsEnabled: boolean;
+  dailyReminderEnabled: boolean;
+  dailyReminderTime: string; // HH:MM 24h format e.g. "20:00"
+  lastDailyReminderDate?: string; // YYYY-MM-DD so daily reminder fires once per day
+}
+
