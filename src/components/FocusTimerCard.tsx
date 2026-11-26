@@ -30,6 +30,7 @@ interface FocusTimerCardProps {
   onOpenManualLog: (taskId: string, forDate?: string) => void;
   onEnterMiniMode: () => void;
   isElectron: boolean;
+  overflowBannerText?: string | null;
 }
 
 export const FocusTimerCard: React.FC<FocusTimerCardProps> = ({
@@ -52,6 +53,7 @@ export const FocusTimerCard: React.FC<FocusTimerCardProps> = ({
   onOpenManualLog,
   onEnterMiniMode,
   isElectron,
+  overflowBannerText,
 }) => {
   const [showSaveNote, setShowSaveNote] = useState(false);
   const [sessionNote, setSessionNote] = useState('');
@@ -473,6 +475,12 @@ export const FocusTimerCard: React.FC<FocusTimerCardProps> = ({
               style={{ width: `${progressPercent}%` }}
             />
           </div>
+
+          {overflowBannerText && (
+            <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+              {overflowBannerText}
+            </p>
+          )}
         </div>
       )}
     </section>

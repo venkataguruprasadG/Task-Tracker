@@ -23,6 +23,7 @@ import {
   TimerMode,
 } from '../types/study';
 import {
+  allocateSessionSeconds,
   calculateStreak,
   calculateTaskStreak,
   formatDueFromLabel,
@@ -223,6 +224,41 @@ export const TodayView: React.FC<TodayViewProps> = ({
     [scheduledTodayHabits, todayKey]
   );
 
+  // Live waterfall allocation preview for currently running/paused timer
+  const liveAllocations = useMemo(() => {
+    if (!timer || timer.revisionProblemId || elapsedSeconds <= 0) return [];
+    const activeTask = tasks.find((t) => t.id === timer.taskId);
+    if (!activeTask) return [];
+    return allocateSessionSeconds(
+      activeTask,
+      elapsedSeconds,
+      todayKey,
+      timer.forDate,
+      sessions
+    );
+  }, [timer, elapsedSeconds, tasks, todayKey, sessions]);
+
+  const liveSecondsByTaskAndForDate = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!timer || timer.revisionProblemId) return map;
+    for (const alloc of liveAllocations) {
+      const key = `${timer.taskId}__${alloc.forDate}`;
+      map.set(key, (map.get(key) || 0) + alloc.seconds);
+    }
+    return map;
+  }, [timer, liveAllocations]);
+
+  const liveOverflowBannerText = useMemo(() => {
+    const overflowAllocs = liveAllocations.filter((a) => a.isOverflow);
+    if (overflowAllocs.length === 0) return null;
+    const totalOverflowSecs = overflowAllocs.reduce((sum, a) => sum + a.seconds, 0);
+    const label =
+      overflowAllocs.length === 1
+        ? formatDueFromLabel(overflowAllocs[0].forDate, todayKey)
+        : `${overflowAllocs.length} missed due days`;
+    return `Extra time (+${formatSecondsHuman(totalOverflowSecs)}) will automatically apply to ${label} when saved.`;
+  }, [liveAllocations, todayKey]);
+
   const dailyProgressItems = useMemo<DailyProgressTaskItem[]>(() => {
     const activeOneTimeForToday = oneTimeTasks.filter(
       (t) => t.completedDates.length === 0 || t.completedDates.includes(todayKey)
@@ -231,10 +267,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
     return todaysTasks.map((task, idx) => {
       const savedSecs = secondsByTaskAndForDate.get(`${task.id}__${todayKey}`) || 0;
-      const liveSecs =
-        timer && !timer.revisionProblemId && timer.taskId === task.id && timer.forDate === todayKey
-          ? elapsedSeconds
-          : 0;
+      const liveSecs = liveSecondsByTaskAndForDate.get(`${task.id}__${todayKey}`) || 0;
       const isRunningThis =
         timer !== null &&
         !timer.revisionProblemId &&
@@ -253,7 +286,14 @@ export const TodayView: React.FC<TodayViewProps> = ({
         isActive: isRunningThis,
       };
     });
-  }, [scheduledTodayHabits, oneTimeTasks, todayKey, secondsByTaskAndForDate, timer, elapsedSeconds]);
+  }, [
+    scheduledTodayHabits,
+    oneTimeTasks,
+    todayKey,
+    secondsByTaskAndForDate,
+    liveSecondsByTaskAndForDate,
+    timer,
+  ]);
 
   const selectedLoggedSeconds = activeRevisionProblem
     ? 0
@@ -262,10 +302,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
   const renderTaskRow = (task: StudyTask) => {
     const isDoneToday = task.completedDates.includes(todayKey);
     const savedSecs = secondsByTaskAndForDate.get(`${task.id}__${todayKey}`) || 0;
-    const liveSecs =
-      timer && !timer.revisionProblemId && timer.taskId === task.id && timer.forDate === todayKey
-        ? elapsedSeconds
-        : 0;
+    const liveSecs = liveSecondsByTaskAndForDate.get(`${task.id}__${todayKey}`) || 0;
     const totalSecs = savedSecs + liveSecs;
     const targetSecs = task.targetMinutes * 60;
     const pct = Math.min(100, Math.round((totalSecs / targetSecs) * 100));
@@ -526,6 +563,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
         onOpenManualLog={onOpenManualLog}
         onEnterMiniMode={onEnterMiniMode}
         isElectron={isElectron}
+        overflowBannerText={liveOverflowBannerText}
       />
 
       {/* Clean 3-Stat Daily Summary Strip */}
@@ -723,13 +761,16 @@ export const TodayView: React.FC<TodayViewProps> = ({
           <div className="bg-white dark:bg-[#141923] border border-amber-200 dark:border-amber-500/30 rounded-2xl divide-y divide-amber-100 dark:divide-slate-800/80 overflow-hidden">
             {missedCarryoverItems.map(({ task, missedDate }) => {
               const savedSecs = secondsByTaskAndForDate.get(`${task.id}__${missedDate}`) || 0;
-              const liveSecs =
-                timer && !timer.revisionProblemId && timer.taskId === task.id && timer.forDate === missedDate
-                  ? elapsedSeconds
-                  : 0;
+              const liveSecs = liveSecondsByTaskAndForDate.get(`${task.id}__${missedDate}`) || 0;
               const totalSecs = savedSecs + liveSecs;
               const targetSecs = task.targetMinutes * 60;
               const pct = Math.min(100, Math.round((totalSecs / targetSecs) * 100));
+              const isReceivingOverflow =
+                liveSecs > 0 &&
+                timer !== null &&
+                !timer.revisionProblemId &&
+                timer.taskId === task.id &&
+                timer.forDate !== missedDate;
               const isRunningThis =
                 timer !== null &&
                 !timer.revisionProblemId &&
@@ -741,7 +782,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
                 <div
                   key={`${task.id}-${missedDate}`}
                   className={`px-5 py-4 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-                    isRunningThis
+                    isRunningThis || isReceivingOverflow
                       ? 'bg-amber-50/70 dark:bg-amber-950/20'
                       : 'hover:bg-amber-50/40 dark:hover:bg-slate-800/35'
                   }`}
@@ -766,6 +807,11 @@ export const TodayView: React.FC<TodayViewProps> = ({
                           {isRunningThis && (
                             <span className="text-xs font-mono text-amber-700 dark:text-amber-400 font-medium">
                               · Active
+                            </span>
+                          )}
+                          {isReceivingOverflow && (
+                            <span className="text-xs font-mono text-teal-700 dark:text-teal-400 font-medium">
+                              · Filling from extra time
                             </span>
                           )}
                         </div>

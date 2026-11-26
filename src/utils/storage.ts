@@ -287,6 +287,120 @@ export function getMissedDatesForTask(
   return missed;
 }
 
+export interface SessionAllocation {
+  forDate: string;
+  seconds: number;
+  isOverflow: boolean;
+  completesDate: boolean;
+}
+
+/**
+ * Waterfall allocator for logged/live study time:
+ * 1. Fills primaryForDateKey (typically Today) up to task.targetMinutes (unless already complete).
+ * 2. Spills any extra time beyond target into remaining missed due days (newest-first, matching UI order)
+ *    up to each due day's target.
+ * 3. If no due days remain (or all due days are now completely filled), allocates all remaining extra
+ *    time back to primaryForDateKey (Today's work).
+ */
+export function allocateSessionSeconds(
+  task: StudyTask,
+  durationSeconds: number,
+  studyDateKey: string,
+  primaryForDateKey: string,
+  existingSessions: StudySession[]
+): SessionAllocation[] {
+  if (durationSeconds <= 0) return [];
+
+  const targetSeconds = Math.max(60, task.targetMinutes * 60);
+  const completedSet = new Set(task.completedDates || []);
+
+  const loggedByForDate = new Map<string, number>();
+  for (const s of existingSessions) {
+    if (s.revisionProblemId || s.taskId !== task.id) continue;
+    const key = s.forDate || s.date;
+    loggedByForDate.set(key, (loggedByForDate.get(key) || 0) + s.durationSeconds);
+  }
+
+  const getLogged = (dateKey: string) => loggedByForDate.get(dateKey) || 0;
+
+  const missedDates = isRecurringTask(task)
+    ? getMissedDatesForTask(task, studyDateKey).filter((d) => d !== primaryForDateKey)
+    : [];
+
+  // Fast path: no remaining due days — everything goes to primaryForDateKey
+  if (missedDates.length === 0) {
+    const already = getLogged(primaryForDateKey);
+    return [
+      {
+        forDate: primaryForDateKey,
+        seconds: durationSeconds,
+        isOverflow: false,
+        completesDate:
+          !completedSet.has(primaryForDateKey) && already + durationSeconds >= targetSeconds,
+      },
+    ];
+  }
+
+  let remaining = durationSeconds;
+  let primarySeconds = 0;
+  let primaryCompletes = false;
+
+  // Step 1: Fill primaryForDateKey up to its target (if not already completed/met)
+  const alreadyPrimary = getLogged(primaryForDateKey);
+  const neededPrimary = completedSet.has(primaryForDateKey)
+    ? 0
+    : Math.max(0, targetSeconds - alreadyPrimary);
+
+  if (neededPrimary > 0 && remaining > 0) {
+    const take = Math.min(remaining, neededPrimary);
+    primarySeconds += take;
+    remaining -= take;
+    if (alreadyPrimary + primarySeconds >= targetSeconds) {
+      primaryCompletes = true;
+    }
+  }
+
+  // Step 2: Spill extra time into remaining due days up to each due day's target
+  const dueAllocations: SessionAllocation[] = [];
+  for (const dueDate of missedDates) {
+    if (remaining <= 0) break;
+    const alreadyDue = getLogged(dueDate);
+    const neededDue = Math.max(0, targetSeconds - alreadyDue);
+    if (neededDue <= 0) continue;
+
+    const take = Math.min(remaining, neededDue);
+    remaining -= take;
+    dueAllocations.push({
+      forDate: dueDate,
+      seconds: take,
+      isOverflow: true,
+      completesDate: !completedSet.has(dueDate) && alreadyDue + take >= targetSeconds,
+    });
+  }
+
+  // Step 3: All due days are now full — any leftover extra time goes back to primaryForDateKey (Today)
+  if (remaining > 0) {
+    primarySeconds += remaining;
+    if (!completedSet.has(primaryForDateKey) && alreadyPrimary + primarySeconds >= targetSeconds) {
+      primaryCompletes = true;
+    }
+    remaining = 0;
+  }
+
+  const result: SessionAllocation[] = [];
+  if (primarySeconds > 0) {
+    result.push({
+      forDate: primaryForDateKey,
+      seconds: primarySeconds,
+      isOverflow: false,
+      completesDate: primaryCompletes,
+    });
+  }
+  result.push(...dueAllocations);
+
+  return result;
+}
+
 export function calculateStreak(activeDates: Set<string>): { current: number; best: number } {
   if (activeDates.size === 0) return { current: 0, best: 0 };
 

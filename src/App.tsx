@@ -14,8 +14,11 @@ import {
 } from './types/study';
 import {
   addDaysToDateKey,
+  allocateSessionSeconds,
   formatClock,
+  formatDueFromLabel,
   formatReadableDate,
+  formatSecondsHuman,
   generateId,
   getDateKey,
   getDaysDifference,
@@ -90,6 +93,9 @@ export default function App() {
   const [lcModalOpen, setLcModalOpen] = useState(false);
   const [lcModalTaskId, setLcModalTaskId] = useState<string | null>(null);
   const [lcModalDateKey, setLcModalDateKey] = useState<string>(getDateKey());
+  const [pendingLcPrompts, setPendingLcPrompts] = useState<
+    { taskId: string; dateKey: string }[]
+  >([]);
 
   // Reminders, sound chime & notification toast
   const [reminderSettings, setReminderSettings] = useState<ReminderSettings>(() =>
@@ -336,18 +342,40 @@ export default function App() {
     setActiveTab('today');
   };
 
-  const markTaskDateComplete = (taskId: string, dateKey: string) => {
+  const markTaskDatesComplete = (taskId: string, dateKeys: string[]) => {
+    if (dateKeys.length === 0) return;
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
-        if (t.completedDates.includes(dateKey)) return t;
+        const completedSet = new Set(t.completedDates);
+        for (const key of dateKeys) completedSet.add(key);
+        const dateKeySet = new Set(dateKeys);
         return {
           ...t,
-          completedDates: [...t.completedDates, dateKey],
-          skippedDates: (t.skippedDates || []).filter((d) => d !== dateKey),
+          completedDates: Array.from(completedSet),
+          skippedDates: (t.skippedDates || []).filter((d) => !dateKeySet.has(d)),
         };
       })
     );
+  };
+
+  const markTaskDateComplete = (taskId: string, dateKey: string) => {
+    markTaskDatesComplete(taskId, [dateKey]);
+  };
+
+  const enqueueLeetCodePrompts = (prompts: { taskId: string; dateKey: string }[]) => {
+    if (prompts.length === 0) return;
+    if (!lcModalOpen) {
+      const [first, ...rest] = prompts;
+      setLcModalTaskId(first.taskId);
+      setLcModalDateKey(first.dateKey);
+      setLcModalOpen(true);
+      if (rest.length > 0) {
+        setPendingLcPrompts((prev) => [...prev, ...rest]);
+      }
+    } else {
+      setPendingLcPrompts((prev) => [...prev, ...prompts]);
+    }
   };
 
   const handleReviewProblem = (problemId: string, solvedSolo: boolean, note?: string) => {
@@ -396,45 +424,90 @@ export default function App() {
       ? leetcodeProblems.find((p) => p.id === revisionProblemId)
       : null;
 
-    const newSession: StudySession = {
+    // Revision sessions always log directly without affecting daily/carryover allocations
+    if (revProblem) {
+      const newSession: StudySession = {
+        id: generateId(),
+        taskId: task.id,
+        taskTitle: `Revise LC #${revProblem.problemNumber}${revProblem.title ? ` · ${revProblem.title}` : ''}`,
+        category: 'LeetCode Revision',
+        date: studyDateKey,
+        revisionProblemId: revProblem.id,
+        durationSeconds,
+        note: note || undefined,
+        loggedAt: new Date().toISOString(),
+      };
+      setSessions((prev) => [newSession, ...prev]);
+      return;
+    }
+
+    // Waterfall allocation: fill primary day up to target -> spill extra into remaining due days -> leftover back to primary
+    const allocations = allocateSessionSeconds(
+      task,
+      durationSeconds,
+      studyDateKey,
+      forDateKey,
+      sessions
+    );
+
+    if (allocations.length === 0) return;
+
+    const nowIso = new Date().toISOString();
+    const createdSessions: StudySession[] = allocations.map((alloc) => ({
       id: generateId(),
       taskId: task.id,
-      taskTitle: revProblem
-        ? `Revise LC #${revProblem.problemNumber}${revProblem.title ? ` · ${revProblem.title}` : ''}`
-        : task.title,
-      category: revProblem ? 'LeetCode Revision' : task.category,
+      taskTitle: task.title,
+      category: task.category,
       date: studyDateKey,
-      forDate: !revProblem && forDateKey !== studyDateKey ? forDateKey : undefined,
-      revisionProblemId: revProblem?.id,
-      durationSeconds,
+      forDate: alloc.forDate !== studyDateKey ? alloc.forDate : undefined,
+      durationSeconds: alloc.seconds,
       note: note || undefined,
-      loggedAt: new Date().toISOString(),
-    };
+      loggedAt: nowIso,
+    }));
 
-    const updatedSessions = [newSession, ...sessions];
-    setSessions(updatedSessions);
+    setSessions((prev) => [...createdSessions, ...prev]);
 
-    // For normal / carryover daily tasks (not revisions), auto-complete once target is met
-    if (!revProblem) {
-      const totalSecondsForObligation = updatedSessions
-        .filter(
-          (s) => !s.revisionProblemId && s.taskId === task.id && (s.forDate || s.date) === forDateKey
-        )
-        .reduce((sum, s) => sum + s.durationSeconds, 0);
+    const datesCompletedNow = allocations
+      .filter((a) => a.completesDate)
+      .map((a) => a.forDate);
 
-      if (
-        totalSecondsForObligation >= task.targetMinutes * 60 &&
-        !task.completedDates.includes(forDateKey)
-      ) {
-        if (isLeetCodeTask(task)) {
-          // Prompt for LeetCode problem # so it enters the 3-day spaced repetition queue
-          setLcModalTaskId(task.id);
-          setLcModalDateKey(forDateKey);
-          setLcModalOpen(true);
-        } else {
-          markTaskDateComplete(task.id, forDateKey);
-        }
+    if (datesCompletedNow.length > 0) {
+      if (isLeetCodeTask(task)) {
+        enqueueLeetCodePrompts(
+          datesCompletedNow.map((dateKey) => ({ taskId: task.id, dateKey }))
+        );
+      } else {
+        markTaskDatesComplete(task.id, datesCompletedNow);
       }
+    }
+
+    // Friendly confirmation when extra time automatically flowed into missed due days
+    const overflowAllocs = allocations.filter((a) => a.isOverflow);
+    if (overflowAllocs.length > 0) {
+      const totalOverflowSeconds = overflowAllocs.reduce((sum, a) => sum + a.seconds, 0);
+      const clearedCount = overflowAllocs.filter((a) => a.completesDate).length;
+      const primaryAlloc = allocations.find((a) => !a.isOverflow);
+
+      const dueSummary =
+        overflowAllocs.length === 1
+          ? formatDueFromLabel(overflowAllocs[0].forDate, studyDateKey)
+          : `${overflowAllocs.length} due days`;
+
+      const title =
+        clearedCount > 0
+          ? `Cleared ${clearedCount === 1 && overflowAllocs.length === 1 ? dueSummary : `${clearedCount} due ${clearedCount === 1 ? 'day' : 'days'}`}`
+          : `Extra time applied to ${dueSummary}`;
+
+      const parts = [
+        `${formatSecondsHuman(totalOverflowSeconds)} allocated to ${dueSummary}`,
+      ];
+      if (primaryAlloc && primaryAlloc.seconds > 0) {
+        parts.push(
+          `${formatSecondsHuman(primaryAlloc.seconds)} on ${formatReadableDate(primaryAlloc.forDate)}`
+        );
+      }
+
+      showToast(title, parts.join(' · '));
     }
   };
 
@@ -1092,8 +1165,16 @@ export default function App() {
         contextLabel={lcModalContextLabel}
         solvedDateKey={lcModalDateKey}
         onClose={() => {
-          setLcModalOpen(false);
-          setLcModalTaskId(null);
+          if (pendingLcPrompts.length > 0) {
+            const [next, ...rest] = pendingLcPrompts;
+            setPendingLcPrompts(rest);
+            setLcModalTaskId(next.taskId);
+            setLcModalDateKey(next.dateKey);
+            setLcModalOpen(true);
+          } else {
+            setLcModalOpen(false);
+            setLcModalTaskId(null);
+          }
         }}
         onSubmit={handleSaveLeetCodeProblem}
       />
