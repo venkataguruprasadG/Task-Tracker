@@ -68,7 +68,7 @@ interface TodayViewProps {
   onFinishTimer: (note: string, revisionOutcome?: 'solo' | 'assisted') => void;
   onToggleCompleteDate: (taskId: string, dateKey: string) => void;
   onTogglePauseTask: (taskId: string) => void;
-  onSkipMissedDate: (taskId: string, dateKey: string) => void;
+  onSkipMissedDates: (taskId: string, dateKeys: string[]) => void;
   onReviewProblem: (problemId: string, solvedSolo: boolean) => void;
   onOpenNewTask: () => void;
   onOpenEditTask: (task: StudyTask) => void;
@@ -99,7 +99,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
   onFinishTimer,
   onToggleCompleteDate,
   onTogglePauseTask,
-  onSkipMissedDate,
+  onSkipMissedDates,
   onReviewProblem,
   onOpenNewTask,
   onOpenEditTask,
@@ -109,6 +109,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
   isElectron,
 }) => {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmSkipTaskId, setConfirmSkipTaskId] = useState<string | null>(null);
   const todayKey = getDateKey();
 
   const todayFormatted = new Date().toLocaleDateString('en-US', {
@@ -142,17 +143,33 @@ export const TodayView: React.FC<TodayViewProps> = ({
     return saved + (timer ? elapsedSeconds : 0);
   }, [todaySessions, timer, elapsedSeconds]);
 
-  // All missed carryover items across daily repeating tasks
-  const missedCarryoverItems = useMemo(() => {
-    const list: { task: StudyTask; missedDate: string }[] = [];
+  // Missed carryover items grouped by task (one row per task showing how many days are due)
+  const missedCarryoverGroups = useMemo(() => {
+    const groups: { task: StudyTask; missedDates: string[] }[] = [];
     for (const task of tasks) {
       const missedDates = getMissedDatesForTask(task, todayKey);
-      for (const missedDate of missedDates) {
-        list.push({ task, missedDate });
+      if (missedDates.length > 0) {
+        groups.push({ task, missedDates });
       }
     }
-    return list.sort((a, b) => b.missedDate.localeCompare(a.missedDate));
+    return groups.sort((a, b) => {
+      const cmp = b.missedDates[0].localeCompare(a.missedDates[0]);
+      return cmp !== 0 ? cmp : b.missedDates.length - a.missedDates.length;
+    });
   }, [tasks, todayKey]);
+
+  const totalMissedCarryoverDays = useMemo(
+    () => missedCarryoverGroups.reduce((sum, g) => sum + g.missedDates.length, 0),
+    [missedCarryoverGroups]
+  );
+
+  const missedDaysCountByTask = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const group of missedCarryoverGroups) {
+      map.set(group.task.id, group.missedDates.length);
+    }
+    return map;
+  }, [missedCarryoverGroups]);
 
   // LeetCode problems due for revision today or overdue
   const dueRevisions = useMemo(() => {
@@ -251,12 +268,21 @@ export const TodayView: React.FC<TodayViewProps> = ({
   const liveOverflowBannerText = useMemo(() => {
     const overflowAllocs = liveAllocations.filter((a) => a.isOverflow);
     if (overflowAllocs.length === 0) return null;
-    const totalOverflowSecs = overflowAllocs.reduce((sum, a) => sum + a.seconds, 0);
-    const label =
-      overflowAllocs.length === 1
-        ? formatDueFromLabel(overflowAllocs[0].forDate, todayKey)
-        : `${overflowAllocs.length} missed due days`;
-    return `Extra time (+${formatSecondsHuman(totalOverflowSecs)}) will automatically apply to ${label} when saved.`;
+    const dueOverflows = overflowAllocs.filter((a) => a.forDate < todayKey);
+    const todayOverflow = overflowAllocs.find((a) => a.forDate === todayKey);
+
+    if (dueOverflows.length > 0) {
+      const totalDueSecs = dueOverflows.reduce((sum, a) => sum + a.seconds, 0);
+      const label =
+        dueOverflows.length === 1
+          ? formatDueFromLabel(dueOverflows[0].forDate, todayKey)
+          : `${dueOverflows.length} missed due days`;
+      return `Extra time (+${formatSecondsHuman(totalDueSecs)}) will automatically apply to ${label} when saved.`;
+    }
+    if (todayOverflow) {
+      return `All due days filled — extra time (+${formatSecondsHuman(todayOverflow.seconds)}) will apply to Today when saved.`;
+    }
+    return null;
   }, [liveAllocations, todayKey]);
 
   const dailyProgressItems = useMemo<DailyProgressTaskItem[]>(() => {
@@ -314,7 +340,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
       timer.forDate === todayKey &&
       timer.isRunning;
     const streak = taskStreakMap.get(task.id) || 0;
-    const missedCountForThis = missedCarryoverItems.filter((m) => m.task.id === task.id).length;
+    const missedCountForThis = missedDaysCountByTask.get(task.id) || 0;
     const isLc = isLeetCodeTask(task);
     const taskColor = getTaskColor(task);
 
@@ -412,7 +438,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
                       ·
                     </span>
                     <span className="text-amber-700 dark:text-amber-400 font-medium">
-                      {missedCountForThis} missed due above
+                      {missedCountForThis} {missedCountForThis === 1 ? 'day' : 'days'} due above
                     </span>
                   </>
                 )}
@@ -613,9 +639,9 @@ export const TodayView: React.FC<TodayViewProps> = ({
               <span className="text-teal-700 dark:text-teal-400 font-medium">
                 {dueRevisions.length} LeetCode {dueRevisions.length === 1 ? 'revision' : 'revisions'} due
               </span>
-            ) : missedCarryoverItems.length > 0 ? (
+            ) : totalMissedCarryoverDays > 0 ? (
               <span className="text-amber-700 dark:text-amber-400 font-medium">
-                {missedCarryoverItems.length} carryover from earlier
+                {totalMissedCarryoverDays} carryover {totalMissedCarryoverDays === 1 ? 'day' : 'days'} from earlier
               </span>
             ) : (
               'All caught up'
@@ -740,8 +766,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
         </section>
       )}
 
-      {/* Carryover / Missed From Previous Days */}
-      {missedCarryoverItems.length > 0 && (
+      {/* Carryover / Missed From Previous Days (Grouped: 1 row per task) */}
+      {missedCarryoverGroups.length > 0 && (
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -750,37 +776,70 @@ export const TodayView: React.FC<TodayViewProps> = ({
                 Due From Previous Days
               </h2>
               <span className="text-xs font-mono tabular-nums text-amber-700 dark:text-amber-400 font-medium">
-                {missedCarryoverItems.length}
+                {missedCarryoverGroups.length}
               </span>
             </div>
             <span className="text-xs text-slate-500 dark:text-slate-400">
-              Complete these along with today&apos;s tasks
+              {totalMissedCarryoverDays} missed {totalMissedCarryoverDays === 1 ? 'day' : 'days'} total
             </span>
           </div>
 
           <div className="bg-white dark:bg-[#141923] border border-amber-200 dark:border-amber-500/30 rounded-2xl divide-y divide-amber-100 dark:divide-slate-800/80 overflow-hidden">
-            {missedCarryoverItems.map(({ task, missedDate }) => {
-              const savedSecs = secondsByTaskAndForDate.get(`${task.id}__${missedDate}`) || 0;
-              const liveSecs = liveSecondsByTaskAndForDate.get(`${task.id}__${missedDate}`) || 0;
+            {missedCarryoverGroups.map(({ task, missedDates }) => {
+              const dueDaysCount = missedDates.length;
+              const taskColor = getTaskColor(task);
+
+              // Target the currently running missed date if active on this task, otherwise the most recent missed date
+              const activeMissedDate =
+                timer !== null &&
+                !timer.revisionProblemId &&
+                timer.taskId === task.id &&
+                missedDates.includes(timer.forDate)
+                  ? timer.forDate
+                  : missedDates[0];
+
+              const savedSecs = missedDates.reduce(
+                (sum, d) => sum + (secondsByTaskAndForDate.get(`${task.id}__${d}`) || 0),
+                0
+              );
+              const liveSecs = missedDates.reduce(
+                (sum, d) => sum + (liveSecondsByTaskAndForDate.get(`${task.id}__${d}`) || 0),
+                0
+              );
               const totalSecs = savedSecs + liveSecs;
-              const targetSecs = task.targetMinutes * 60;
-              const pct = Math.min(100, Math.round((totalSecs / targetSecs) * 100));
+              const totalTargetMinutes = task.targetMinutes * dueDaysCount;
+              const totalTargetSecs = totalTargetMinutes * 60;
+              const pct = Math.min(100, Math.round((totalSecs / totalTargetSecs) * 100));
+
+              const isRunningThis =
+                timer !== null &&
+                !timer.revisionProblemId &&
+                timer.taskId === task.id &&
+                missedDates.includes(timer.forDate) &&
+                timer.isRunning;
+
               const isReceivingOverflow =
                 liveSecs > 0 &&
                 timer !== null &&
                 !timer.revisionProblemId &&
                 timer.taskId === task.id &&
-                timer.forDate !== missedDate;
-              const isRunningThis =
-                timer !== null &&
-                !timer.revisionProblemId &&
-                timer.taskId === task.id &&
-                timer.forDate === missedDate &&
-                timer.isRunning;
+                !missedDates.includes(timer.forDate);
+
+              const dueLabel =
+                dueDaysCount === 1
+                  ? formatDueFromLabel(missedDates[0], todayKey)
+                  : `Due from ${dueDaysCount} days`;
+
+              // When skipping 1 day from a multi-day backlog, prefer skipping the oldest untouched day
+              const dayToSkipOne =
+                [...missedDates]
+                  .reverse()
+                  .find((d) => (secondsByTaskAndForDate.get(`${task.id}__${d}`) || 0) === 0) ||
+                missedDates[missedDates.length - 1];
 
               return (
                 <div
-                  key={`${task.id}-${missedDate}`}
+                  key={task.id}
                   className={`px-5 py-4 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
                     isRunningThis || isReceivingOverflow
                       ? 'bg-amber-50/70 dark:bg-amber-950/20'
@@ -790,10 +849,18 @@ export const TodayView: React.FC<TodayViewProps> = ({
                   <div className="flex items-start gap-3.5 min-w-0 flex-1">
                     <button
                       type="button"
-                      onClick={() => onToggleCompleteDate(task.id, missedDate)}
+                      onClick={() => onToggleCompleteDate(task.id, activeMissedDate)}
                       className="mt-0.5 text-amber-500 hover:text-teal-600 dark:hover:text-teal-400 transition-colors cursor-pointer shrink-0"
-                      title={`Mark ${task.title} complete for ${formatReadableDate(missedDate)}`}
-                      aria-label={`Mark ${task.title} complete for ${formatReadableDate(missedDate)}`}
+                      title={
+                        dueDaysCount === 1
+                          ? `Mark ${task.title} complete for ${formatReadableDate(activeMissedDate)}`
+                          : `Mark 1 due day complete (${formatReadableDate(activeMissedDate)})`
+                      }
+                      aria-label={
+                        dueDaysCount === 1
+                          ? `Mark ${task.title} complete for ${formatReadableDate(activeMissedDate)}`
+                          : `Mark 1 due day of ${task.title} complete`
+                      }
                     >
                       <Circle className="w-5 h-5" />
                     </button>
@@ -801,6 +868,10 @@ export const TodayView: React.FC<TodayViewProps> = ({
                     <div className="min-w-0 flex-1 space-y-2">
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: taskColor }}
+                          />
                           <span className="text-sm font-medium text-slate-900 dark:text-slate-100">
                             {task.title}
                           </span>
@@ -818,7 +889,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
                         <div className="flex items-center gap-2 text-xs mt-0.5 flex-wrap">
                           <span className="font-medium text-amber-700 dark:text-amber-400">
-                            {formatDueFromLabel(missedDate, todayKey)}
+                            {dueLabel}
                           </span>
                           <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
                             ·
@@ -828,7 +899,9 @@ export const TodayView: React.FC<TodayViewProps> = ({
                             ·
                           </span>
                           <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                            Target {formatMinutesCompact(task.targetMinutes)}
+                            {dueDaysCount === 1
+                              ? `Target ${formatMinutesCompact(task.targetMinutes)}`
+                              : `Target ${formatMinutesCompact(totalTargetMinutes)} (${dueDaysCount} × ${formatMinutesCompact(task.targetMinutes)})`}
                           </span>
                         </div>
                       </div>
@@ -843,20 +916,20 @@ export const TodayView: React.FC<TodayViewProps> = ({
                           </div>
                           <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 shrink-0">
                             {formatMinutesCompact(totalSecs / 60)} /{' '}
-                            {formatMinutesCompact(task.targetMinutes)}
+                            {formatMinutesCompact(totalTargetMinutes)}
                           </span>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0 pl-8 sm:pl-0">
+                  <div className="flex items-center gap-1.5 shrink-0 pl-8 sm:pl-0 flex-wrap">
                     <button
                       type="button"
                       onClick={() => {
                         onClearRevisionFocus();
-                        onSelectTask(task.id, missedDate);
-                        if (!isRunningThis) onStartTimer(task.id, missedDate);
+                        onSelectTask(task.id, activeMissedDate);
+                        if (!isRunningThis) onStartTimer(task.id, activeMissedDate);
                       }}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-500/15 dark:hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap"
                     >
@@ -866,20 +939,61 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => onOpenManualLog(task.id, missedDate)}
+                      onClick={() => onOpenManualLog(task.id, activeMissedDate)}
                       className="px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
                     >
                       + Log
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => onSkipMissedDate(task.id, missedDate)}
-                      className="px-2 py-1.5 text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
-                      title="Skip this missed day"
-                    >
-                      Skip
-                    </button>
+                    {dueDaysCount === 1 ? (
+                      <button
+                        type="button"
+                        onClick={() => onSkipMissedDates(task.id, missedDates)}
+                        className="px-2 py-1.5 text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
+                        title="Skip this missed day"
+                      >
+                        Skip
+                      </button>
+                    ) : confirmSkipTaskId === task.id ? (
+                      <div className="flex items-center gap-1 pl-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSkipMissedDates(task.id, [dayToSkipOne]);
+                            setConfirmSkipTaskId(null);
+                          }}
+                          className="px-2 py-1 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-100 text-[11px] font-medium rounded cursor-pointer whitespace-nowrap"
+                        >
+                          Skip 1d
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSkipMissedDates(task.id, missedDates);
+                            setConfirmSkipTaskId(null);
+                          }}
+                          className="px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-medium rounded cursor-pointer whitespace-nowrap"
+                        >
+                          Skip all ({dueDaysCount}d)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmSkipTaskId(null)}
+                          className="px-2 py-1 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 text-[11px] rounded cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmSkipTaskId(task.id)}
+                        className="px-2 py-1.5 text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
+                        title={`Skip 1 or all ${dueDaysCount} missed days`}
+                      >
+                        Skip
+                      </button>
+                    )}
                   </div>
                 </div>
               );

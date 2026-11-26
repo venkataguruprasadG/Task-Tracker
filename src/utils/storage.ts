@@ -296,11 +296,11 @@ export interface SessionAllocation {
 
 /**
  * Waterfall allocator for logged/live study time:
- * 1. Fills primaryForDateKey (typically Today) up to task.targetMinutes (unless already complete).
- * 2. Spills any extra time beyond target into remaining missed due days (newest-first, matching UI order)
+ * 1. Fills primaryForDateKey up to task.targetMinutes (unless already complete).
+ * 2. Spills any extra time beyond target into remaining missed due days (newest-first)
  *    up to each due day's target.
  * 3. If no due days remain (or all due days are now completely filled), allocates all remaining extra
- *    time back to primaryForDateKey (Today's work).
+ *    time to studyDateKey (Today's work).
  */
 export function allocateSessionSeconds(
   task: StudyTask,
@@ -327,8 +327,8 @@ export function allocateSessionSeconds(
     ? getMissedDatesForTask(task, studyDateKey).filter((d) => d !== primaryForDateKey)
     : [];
 
-  // Fast path: no remaining due days — everything goes to primaryForDateKey
-  if (missedDates.length === 0) {
+  // Fast path: non-recurring task OR working on Today with no missed due days
+  if (!isRecurringTask(task) || (missedDates.length === 0 && primaryForDateKey === studyDateKey)) {
     const already = getLogged(primaryForDateKey);
     return [
       {
@@ -378,11 +378,22 @@ export function allocateSessionSeconds(
     });
   }
 
-  // Step 3: All due days are now full — any leftover extra time goes back to primaryForDateKey (Today)
+  // Step 3: All due days are now full — any leftover extra time goes to studyDateKey (Today)
+  let overflowTodayAllocation: SessionAllocation | null = null;
   if (remaining > 0) {
-    primarySeconds += remaining;
-    if (!completedSet.has(primaryForDateKey) && alreadyPrimary + primarySeconds >= targetSeconds) {
-      primaryCompletes = true;
+    if (primaryForDateKey === studyDateKey) {
+      primarySeconds += remaining;
+      if (!completedSet.has(primaryForDateKey) && alreadyPrimary + primarySeconds >= targetSeconds) {
+        primaryCompletes = true;
+      }
+    } else {
+      const alreadyToday = getLogged(studyDateKey);
+      overflowTodayAllocation = {
+        forDate: studyDateKey,
+        seconds: remaining,
+        isOverflow: true,
+        completesDate: !completedSet.has(studyDateKey) && alreadyToday + remaining >= targetSeconds,
+      };
     }
     remaining = 0;
   }
@@ -397,6 +408,9 @@ export function allocateSessionSeconds(
     });
   }
   result.push(...dueAllocations);
+  if (overflowTodayAllocation) {
+    result.push(overflowTodayAllocation);
+  }
 
   return result;
 }

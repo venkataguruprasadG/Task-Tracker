@@ -481,33 +481,45 @@ export default function App() {
       }
     }
 
-    // Friendly confirmation when extra time automatically flowed into missed due days
+    // Friendly confirmation when extra time automatically flowed into due days or today
     const overflowAllocs = allocations.filter((a) => a.isOverflow);
     if (overflowAllocs.length > 0) {
-      const totalOverflowSeconds = overflowAllocs.reduce((sum, a) => sum + a.seconds, 0);
-      const clearedCount = overflowAllocs.filter((a) => a.completesDate).length;
+      const dueOverflows = overflowAllocs.filter((a) => a.forDate < studyDateKey);
+      const todayOverflow = overflowAllocs.find((a) => a.forDate === studyDateKey);
       const primaryAlloc = allocations.find((a) => !a.isOverflow);
 
-      const dueSummary =
-        overflowAllocs.length === 1
-          ? formatDueFromLabel(overflowAllocs[0].forDate, studyDateKey)
-          : `${overflowAllocs.length} due days`;
+      if (dueOverflows.length > 0) {
+        const totalDueSeconds = dueOverflows.reduce((sum, a) => sum + a.seconds, 0);
+        const clearedDueCount = dueOverflows.filter((a) => a.completesDate).length;
+        const dueSummary =
+          dueOverflows.length === 1
+            ? formatDueFromLabel(dueOverflows[0].forDate, studyDateKey)
+            : `${dueOverflows.length} due days`;
 
-      const title =
-        clearedCount > 0
-          ? `Cleared ${clearedCount === 1 && overflowAllocs.length === 1 ? dueSummary : `${clearedCount} due ${clearedCount === 1 ? 'day' : 'days'}`}`
-          : `Extra time applied to ${dueSummary}`;
+        const title =
+          clearedDueCount > 0
+            ? `Cleared ${
+                clearedDueCount === 1 && dueOverflows.length === 1
+                  ? dueSummary
+                  : `${clearedDueCount} due ${clearedDueCount === 1 ? 'day' : 'days'}`
+              }`
+            : `Extra time applied to ${dueSummary}`;
 
-      const parts = [
-        `${formatSecondsHuman(totalOverflowSeconds)} allocated to ${dueSummary}`,
-      ];
-      if (primaryAlloc && primaryAlloc.seconds > 0) {
-        parts.push(
-          `${formatSecondsHuman(primaryAlloc.seconds)} on ${formatReadableDate(primaryAlloc.forDate)}`
+        const parts = [`${formatSecondsHuman(totalDueSeconds)} allocated to ${dueSummary}`];
+        if (todayOverflow && todayOverflow.seconds > 0) {
+          parts.push(`${formatSecondsHuman(todayOverflow.seconds)} applied to Today`);
+        } else if (primaryAlloc && primaryAlloc.seconds > 0) {
+          parts.push(
+            `${formatSecondsHuman(primaryAlloc.seconds)} on ${formatReadableDate(primaryAlloc.forDate)}`
+          );
+        }
+        showToast(title, parts.join(' · '));
+      } else if (todayOverflow) {
+        showToast(
+          'Due day cleared · Extra applied to Today',
+          `${formatSecondsHuman(todayOverflow.seconds)} credited to Today's work`
         );
       }
-
-      showToast(title, parts.join(' · '));
     }
   };
 
@@ -858,19 +870,20 @@ export default function App() {
     setLeetcodeProblems((prev) => prev.filter((p) => p.id !== problemId));
   };
 
-  const handleSkipMissedDate = (taskId: string, dateKey: string) => {
-    if (timer?.taskId === taskId && timer?.forDate === dateKey && !timer.revisionProblemId) {
+  const handleSkipMissedDates = (taskId: string, dateKeys: string[]) => {
+    if (dateKeys.length === 0) return;
+    const skipSet = new Set(dateKeys);
+    if (timer?.taskId === taskId && !timer.revisionProblemId && skipSet.has(timer.forDate)) {
       setTimer(null);
     }
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
-        const skipped = t.skippedDates || [];
-        if (skipped.includes(dateKey)) return t;
-        return { ...t, skippedDates: [...skipped, dateKey] };
+        const merged = new Set([...(t.skippedDates || []), ...dateKeys]);
+        return { ...t, skippedDates: Array.from(merged) };
       })
     );
-    if (selectedTaskId === taskId && selectedForDate === dateKey) {
+    if (selectedTaskId === taskId && skipSet.has(selectedForDate)) {
       setSelectedForDate(getDateKey());
     }
   };
@@ -1026,7 +1039,7 @@ export default function App() {
             onFinishTimer={handleFinishTimer}
             onToggleCompleteDate={handleToggleCompleteDate}
             onTogglePauseTask={handleTogglePauseTask}
-            onSkipMissedDate={handleSkipMissedDate}
+            onSkipMissedDates={handleSkipMissedDates}
             onReviewProblem={handleReviewProblem}
             onOpenNewTask={() => {
               setEditingTask(null);
